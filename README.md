@@ -65,11 +65,14 @@ graph TD
     ROOT --> api["api.py (核心主程序)"]
     ROOT --> config["config.json (主配置)"]
     ROOT --> keys["keys.json (密钥库)"]
-    ROOT --> log["ephemera-api.log (审计日志)"]
+    ROOT --> logs["logs/ (日志归档目录)"]
     ROOT --> assets["assets/ (静态资源)"]
     ROOT --> certs["certs/ (HTTPS证书)"]
     ROOT --> web["web/ (前端页面)"]
     ROOT --> html["html/ (邮件模板库)"]
+
+    logs --> latest["latest.log (当前运行日志)"]
+    logs --> history["history_xxx.log (自动切割历史日志)"]
 
     web --> admin["admin.html (管理控制台)"]
     web --> index["index.html (Web发信页)"]
@@ -84,12 +87,12 @@ graph TD
 ## 已知问题
 
 当前版本仍存在以下需要改进的技术缺陷，欢迎提交 PR 修复：
-- 日志 API 参数注入：/api/admin/logs 对 lines 参数未做严格的正整数限制，传入负数可能引发 deque 异常。
-- enable_get 作用域：该开关目前未能全局生效，部分内部路由可能未被限制。
-- 前端密钥明文暴露：管理端在请求密钥列表时，通过明文 JSON 返回了完整的 Key，计划后续改为仅返回掩码。
-- HTTP 强制关闭机制缺失：在仅开启 HTTPS 服务时，HTTP 端口暂时无法在配置层被强制关闭。
-- 大文件性能问题：当 keys.json 包含数千条密钥时，全量内存读取机制会导致轻微的性能下降。
-- 高并发热加载边界：在每秒上千次切换模板配置的极端压测下，可能存在微小的文件读取冲突。
+- 日志 API 参数注入：/api/admin/logs 对 lines 参数未做严格的正整数限制，传入负数可能引发 deque 异常。[已修复]
+- enable_get 作用域：该开关目前未能全局生效，部分内部路由可能未被限制。[已修复]
+- 前端密钥明文暴露：管理端在请求密钥列表时，通过明文 JSON 返回了完整的 Key，计划后续改为仅返回掩码。[已修复]
+- HTTP 强制关闭机制缺失：在仅开启 HTTPS 服务时，HTTP 端口暂时无法在配置层被强制关闭。[已修复并添加了在某些奇怪场景下的彩蛋]
+- 大文件性能问题：当 keys.json 包含数千条密钥时，全量内存读取机制会导致轻微的性能下降。[低优先，准备修复]
+- 高并发热加载边界：在每秒上千次切换模板配置的极端压测下，可能存在微小的文件读取冲突。[压测自己发现每秒根本打不出来这么多并发]
 
 ## 开发路线
 
@@ -102,13 +105,43 @@ graph TD
 
 
 
-# Mail Gateway API 文档
+
+# API 文档
+
+## 接口一览
+
+| # | 接口 | 方法 | 路径 | 认证 |
+| :--- | :--- | :---: | :--- | :--- |
+| 1 | 发送邮件（动态模板） | `GET` / `POST` | `/api/{template_name}/send` | `KEY` |
+| 2 | Web 表单发信 | `GET` / `POST` | `/api/web_send` | `KEY` |
+| 3 | 获取可用模板列表 | `GET` / `POST` | `/api/templates` | 公开 |
+| 4 | 获取密钥列表 | `GET` / `POST` | `/api/keys` | `X-Admin-Key` |
+| 5 | 创建新密钥 | `GET` / `POST` | `/api/keys/create` | `X-Admin-Key` |
+| 6 | 吊销密钥 | `GET` / `POST` | `/api/keys/revoke` | `X-Admin-Key` |
+| 7 | 修改密钥权限 | `GET` / `POST` | `/api/keys/perm` | `X-Admin-Key` |
+| 8 | 获取系统运行状态 | `GET` / `POST` | `/api/admin/system_info` | `X-Admin-Key` |
+| 9 | 读取运行日志 | `GET` / `POST` | `/api/admin/logs` | `X-Admin-Key` |
+| 10 | 创建新模板 | `POST` | `/api/admin/create_template` | `X-Admin-Key` |
+| 11 | 增量更新模板 | `POST` | `/api/admin/update_template` | `X-Admin-Key` |
+| 12 | 启用 / 禁用 Web 模板 | `POST` | `/api/admin/toggle_template_web` | `X-Admin-Key` |
+| 13 | 获取全量模板列表 | `GET` / `POST` | `/api/admin/list_templates` | `X-Admin-Key` |
+
+---
 
 ## 接口通用说明
 
 - 所有响应头统一返回 `Content-Type: application/json; charset=utf-8`
-- 成功响应标准格式：`{"ok": true, ...}`
-- 失败响应标准格式：`{"ok": false, "error": "错误描述"}`
+- 成功响应标准格式：
+
+```json
+{"ok": true, ...}
+```
+
+- 失败响应标准格式：
+
+```json
+{"ok": false, "error": "错误描述"}
+```
 
 ---
 
@@ -117,25 +150,25 @@ graph TD
 ### 1. 发送邮件（动态模板）
 
 - **路径**：`/api/{template_name}/send`
-- **方法**：GET 或 POST
+- **方法**：`GET` 或 `POST`
 - **说明**：根据 `{template_name}` 动态调用 `html/` 下对应的模板进行发信。受 `config.json` 中的 `enable_get` 开关限制 GET 请求。
 
-**参数（Query 或 Form/JSON）**
+#### 参数（Query 或 Form/JSON）
 
 | 参数 | 必填 | 说明 |
-| --- | --- | --- |
+| :--- | :---: | :--- |
 | `TO` | 是 | 收件人邮箱地址 |
 | `KEY` | 是 | 发信凭证（支持 `send` 或 `admin` 权限） |
 | 其他参数 | — | 根据模板的 `config.json` 中定义的 `incoming` 规则传入 |
 
-**GET 请求示例**
+#### GET 请求示例
 
 ```http
 GET /api/v1/send?TO=test@qq.com&KEY=YOUR_API_KEY&code=123456 HTTP/1.1
 Host: 127.0.0.1:8088
 ```
 
-**POST 请求示例（JSON）**
+#### POST 请求示例（JSON）
 
 ```http
 POST /api/v1/send HTTP/1.1
@@ -150,7 +183,7 @@ Content-Length: 86
 }
 ```
 
-**返回示例**
+#### 返回示例
 
 ```json
 {"ok": true, "msg": "accepted"}
@@ -161,30 +194,42 @@ Content-Length: 86
 ### 2. Web 表单发信
 
 - **路径**：`/api/web_send`
-- **方法**：POST（`application/x-www-form-urlencoded`）
+- **方法**：`GET` 或 `POST`
 - **说明**：专供前端 Web 发信页使用的接口，不受 `enable_get` 开关限制。
 
-**参数**
+#### 参数（Query 或 Form/JSON）
 
 | 参数 | 必填 | 说明 |
-| --- | --- | --- |
+| :--- | :---: | :--- |
 | `template` | 是 | 模板名称（如 `v1`） |
 | `TO` | 是 | 收件人邮箱地址 |
 | `KEY` | 是 | 发信凭证 |
 | 其他参数 | — | 根据对应模板动态传入 |
 
-**请求示例**
+#### GET 请求示例
+
+```http
+GET /api/web_send?template=v1&TO=test@qq.com&KEY=YOUR_API_KEY&code=123456 HTTP/1.1
+Host: 127.0.0.1:8088
+```
+
+#### POST 请求示例（JSON）
 
 ```http
 POST /api/web_send HTTP/1.1
 Host: 127.0.0.1:8088
-Content-Type: application/x-www-form-urlencoded
-Content-Length: 65
+Content-Type: application/json
+Content-Length: 120
 
-template=v1&TO=test@qq.com&KEY=YOUR_API_KEY&code=123456
+{
+    "template": "v1",
+    "TO": "test@qq.com",
+    "KEY": "YOUR_API_KEY",
+    "code": "123456"
+}
 ```
 
-**返回示例**
+#### 返回示例
 
 ```json
 {"ok": true, "msg": "accepted"}
@@ -195,17 +240,32 @@ template=v1&TO=test@qq.com&KEY=YOUR_API_KEY&code=123456
 ### 3. 获取可用模板列表
 
 - **路径**：`/api/templates`
-- **方法**：GET
+- **方法**：`GET` 或 `POST`
 - **说明**：供前端 Web 发信页拉取可用的模板。会自动过滤掉 `register.json` 中标记为 `is_api_only: true` 的模板。
 
-**请求示例**
+#### 参数
+
+无（GET 请求无需传参，POST 请求传空 JSON `{}`）。
+
+#### GET 请求示例
 
 ```http
 GET /api/templates HTTP/1.1
 Host: 127.0.0.1:8088
 ```
 
-**返回示例**
+#### POST 请求示例（JSON）
+
+```http
+POST /api/templates HTTP/1.1
+Host: 127.0.0.1:8088
+Content-Type: application/json
+Content-Length: 2
+
+{}
+```
+
+#### 返回示例
 
 ```json
 {
@@ -226,14 +286,19 @@ Host: 127.0.0.1:8088
 
 ## 二、管理后台接口（Admin API）
 
-> **注意**：所有 Admin API 必须携带请求头 `X-Admin-Key: <您的Admin权限密钥>`。
+> 注意：所有 Admin API 必须携带请求头 `X-Admin-Key: <您的Admin权限密钥>`。
 
 ### 1. 获取密钥列表
 
 - **路径**：`/api/keys`
-- **方法**：GET
+- **方法**：`GET` 或 `POST`
+- **说明**：返回的 `key` 字段均为脱敏掩码状态（如 `abc123····xyz`）。
 
-**请求示例**
+#### 参数
+
+无（GET 请求无需传参，POST 请求传空 JSON `{}`）。
+
+#### GET 请求示例
 
 ```http
 GET /api/keys HTTP/1.1
@@ -241,10 +306,22 @@ Host: 127.0.0.1:8088
 X-Admin-Key: YOUR_ADMIN_KEY
 ```
 
-**返回示例**
+#### POST 请求示例（JSON）
+
+```http
+POST /api/keys HTTP/1.1
+Host: 127.0.0.1:8088
+X-Admin-Key: YOUR_ADMIN_KEY
+Content-Type: application/json
+Content-Length: 2
+
+{}
+```
+
+#### 返回示例
 
 ```json
-{"ok": true, "keys": [{"id": 1, "key": "...", "status": "active", "perm": "admin", "created": "...", "note": "..."}]}
+{"ok": true, "keys": [{"id": 1, "key": "abc123····xyz", "status": "active", "perm": "admin", "created": "...", "note": "..."}]}
 ```
 
 ---
@@ -252,27 +329,39 @@ X-Admin-Key: YOUR_ADMIN_KEY
 ### 2. 创建新密钥
 
 - **路径**：`/api/keys/create`
-- **方法**：GET
+- **方法**：`GET` 或 `POST`
 
-**参数**
+#### 参数
 
-| 参数 | 说明 |
-| --- | --- |
-| `perm` | 权限级别，可选 `send` 或 `admin` |
-| `note` | 备注信息 |
+| 参数 | 必填 | 说明 |
+| :--- | :---: | :--- |
+| `perm` | 否 | 权限级别：`send` 或 `admin`（默认 `send`） |
+| `note` | 否 | 备注信息 |
 
-**请求示例**
+#### GET 请求示例
 
 ```http
-GET /api/keys/create?perm=send&note=测试专用 HTTP/1.1
+GET /api/keys/create?perm=send&note=test HTTP/1.1
 Host: 127.0.0.1:8088
 X-Admin-Key: YOUR_ADMIN_KEY
 ```
 
-**返回示例**
+#### POST 请求示例（JSON）
+
+```http
+POST /api/keys/create HTTP/1.1
+Host: 127.0.0.1:8088
+X-Admin-Key: YOUR_ADMIN_KEY
+Content-Type: application/json
+Content-Length: 45
+
+{"perm": "send", "note": "测试密钥"}
+```
+
+#### 返回示例
 
 ```json
-{"ok": true, "id": 2, "key": "新生成的密钥", "perm": "send"}
+{"ok": true, "id": 2, "key": "新生成的完整密钥", "perm": "send"}
 ```
 
 ---
@@ -280,17 +369,15 @@ X-Admin-Key: YOUR_ADMIN_KEY
 ### 3. 吊销密钥
 
 - **路径**：`/api/keys/revoke`
-- **方法**：GET
+- **方法**：`GET` 或 `POST`
 
-**参数**
+#### 参数
 
-| 参数 | 说明 |
-| --- | --- |
-| `id` | 密钥 ID |
+| 参数 | 必填 | 说明 |
+| :--- | :---: | :--- |
+| `id` | 是 | 密钥的 ID |
 
-**说明**：将指定密钥状态置为 `revoked`。
-
-**请求示例**
+#### GET 请求示例
 
 ```http
 GET /api/keys/revoke?id=2 HTTP/1.1
@@ -298,7 +385,19 @@ Host: 127.0.0.1:8088
 X-Admin-Key: YOUR_ADMIN_KEY
 ```
 
-**返回示例**
+#### POST 请求示例（JSON）
+
+```http
+POST /api/keys/revoke HTTP/1.1
+Host: 127.0.0.1:8088
+X-Admin-Key: YOUR_ADMIN_KEY
+Content-Type: application/json
+Content-Length: 10
+
+{"id": 2}
+```
+
+#### 返回示例
 
 ```json
 {"ok": true, "revoked_id": "2"}
@@ -309,16 +408,16 @@ X-Admin-Key: YOUR_ADMIN_KEY
 ### 4. 修改密钥权限
 
 - **路径**：`/api/keys/perm`
-- **方法**：GET
+- **方法**：`GET` 或 `POST`
 
-**参数**
+#### 参数
 
-| 参数 | 说明 |
-| --- | --- |
-| `id` | 密钥 ID |
-| `perm` | 新权限，可选 `send` 或 `admin` |
+| 参数 | 必填 | 说明 |
+| :--- | :---: | :--- |
+| `id` | 是 | 密钥的 ID |
+| `perm` | 是 | 新权限（`send` 或 `admin`） |
 
-**请求示例**
+#### GET 请求示例
 
 ```http
 GET /api/keys/perm?id=2&perm=admin HTTP/1.1
@@ -326,7 +425,19 @@ Host: 127.0.0.1:8088
 X-Admin-Key: YOUR_ADMIN_KEY
 ```
 
-**返回示例**
+#### POST 请求示例（JSON）
+
+```http
+POST /api/keys/perm HTTP/1.1
+Host: 127.0.0.1:8088
+X-Admin-Key: YOUR_ADMIN_KEY
+Content-Type: application/json
+Content-Length: 25
+
+{"id": 2, "perm": "admin"}
+```
+
+#### 返回示例
 
 ```json
 {"ok": true, "id": "2", "perm": "admin"}
@@ -334,122 +445,16 @@ X-Admin-Key: YOUR_ADMIN_KEY
 
 ---
 
-### 5. 创建或覆盖邮件模板
-
-- **路径**：`/api/admin/create_template`
-- **方法**：POST（`application/x-www-form-urlencoded`）
-
-**参数**
-
-| 参数 | 说明 |
-| --- | --- |
-| `id` | 模板 ID（仅支持字母数字短横线） |
-| `name` | 模板显示名称 |
-| `account` | 发信账户名 |
-| `subject` | 邮件标题 |
-| `api_fields` | API 传参映射，格式 `参数名:占位符`，逗号分隔 |
-| `html` | 邮件正文 HTML 源码 |
-| `is_web` | 是否在 Web 前端显示（`true`/`false`） |
-| `web_fields` | Web 前端表单映射，格式 `显示名;入参`，逗号分隔 |
-
-**说明**：自动在 `html/` 下生成对应目录及配置文件。
-
-**请求示例**
-
-```http
-POST /api/admin/create_template HTTP/1.1
-Host: 127.0.0.1:8088
-X-Admin-Key: YOUR_ADMIN_KEY
-Content-Type: application/x-www-form-urlencoded
-Content-Length: 234
-
-id=v2&name=新模板&account=default&subject=测试主题&api_fields=code:%7Bcode%7D&html=%3Ch1%3EHello%3C%2Fh1%3E&is_web=true&web_fields=验证码;code
-```
-
-**返回示例**
-
-```json
-{"ok": true, "msg": "template created/updated successfully"}
-```
-
----
-
-### 6. 增量更新模板信息
-
-- **路径**：`/api/admin/update_template`
-- **方法**：POST
-
-**参数**
-
-| 参数 | 说明 |
-| --- | --- |
-| `id` | 模板 ID |
-| `name` | 新显示名称（可选） |
-| `web_fields` | 新 Web 表单映射（可选） |
-
-**说明**：留空不传的字段保持原样，仅更新传入的字段。
-
-**请求示例**
-
-```http
-POST /api/admin/update_template HTTP/1.1
-Host: 127.0.0.1:8088
-X-Admin-Key: YOUR_ADMIN_KEY
-Content-Type: application/x-www-form-urlencoded
-Content-Length: 42
-
-id=v1&name=更新后的名字&web_fields=验证码;code
-```
-
-**返回示例**
-
-```json
-{"ok": true, "msg": "template info updated successfully"}
-```
-
----
-
-### 7. 启用/禁用 Web 模板
-
-- **路径**：`/api/admin/toggle_template_web`
-- **方法**：POST
-
-**参数**
-
-| 参数 | 说明 |
-| --- | --- |
-| `id` | 模板 ID |
-| `action` | `enable` 或 `disable` |
-
-**说明**：切换 `register.json` 中的 `is_api_only` 状态。
-
-**请求示例**
-
-```http
-POST /api/admin/toggle_template_web HTTP/1.1
-Host: 127.0.0.1:8088
-X-Admin-Key: YOUR_ADMIN_KEY
-Content-Type: application/x-www-form-urlencoded
-Content-Length: 20
-
-id=v1&action=disable
-```
-
-**返回示例**
-
-```json
-{"ok": true, "msg": "template web disabled"}
-```
-
----
-
-### 8. 获取系统运行状态
+### 5. 获取系统运行状态
 
 - **路径**：`/api/admin/system_info`
-- **方法**：GET
-- **说明**：获取内存占用、队列数、发信统计等监控数据。
+- **方法**：`GET` 或 `POST`
 
-**请求示例**
+#### 参数
+
+无（GET 无需传参，POST 传 `{}`）。
+
+#### GET 请求示例
 
 ```http
 GET /api/admin/system_info HTTP/1.1
@@ -457,49 +462,173 @@ Host: 127.0.0.1:8088
 X-Admin-Key: YOUR_ADMIN_KEY
 ```
 
-**返回示例**
+#### POST 请求示例（JSON）
+
+```http
+POST /api/admin/system_info HTTP/1.1
+Host: 127.0.0.1:8088
+X-Admin-Key: YOUR_ADMIN_KEY
+Content-Type: application/json
+Content-Length: 2
+
+{}
+```
+
+#### 返回示例
 
 ```json
-{
-  "ok": true,
-  "uptime": "2h 15m 30s",
-  "running_tasks": 0,
-  "total_success": 7994,
-  "total_fail": 12,
-  "total_reject": 100000,
-  "reject_1m": 0,
-  "template_count": 2,
-  "account_count": 1,
-  "mem_used_mb": 45,
-  "mem_total_mb": 4096
-}
+{"ok": true, "uptime": "1h 20m 5s", "running_tasks": 0, "total_success": 120, "total_fail": 5, "total_reject": 3, "reject_1m": 0, "template_count": 2, "account_count": 1, "mem_used_mb": 25, "mem_total_mb": 1024}
 ```
 
 ---
 
-### 9. 读取系统日志
+### 6. 读取运行日志
 
 - **路径**：`/api/admin/logs`
-- **方法**：GET
+- **方法**：`GET` 或 `POST`
 
-**参数**
+#### 参数
 
-| 参数 | 说明 |
-| --- | --- |
-| `lines` | 拉取最后 N 行日志（默认 50，最大 500） |
+| 参数 | 必填 | 说明 |
+| :--- | :---: | :--- |
+| `lines` | 是 | 读取最后 N 行（范围 1-500） |
 
-**请求示例**
+#### GET 请求示例
 
 ```http
-GET /api/admin/logs?lines=100 HTTP/1.1
+GET /api/admin/logs?lines=50 HTTP/1.1
 Host: 127.0.0.1:8088
 X-Admin-Key: YOUR_ADMIN_KEY
 ```
 
-**返回示例**
+#### POST 请求示例（JSON）
+
+```http
+POST /api/admin/logs HTTP/1.1
+Host: 127.0.0.1:8088
+X-Admin-Key: YOUR_ADMIN_KEY
+Content-Type: application/json
+Content-Length: 14
+
+{"lines": 50}
+```
+
+#### 返回示例
 
 ```json
-{"ok": true, "logs": "[2026-10-24 18:03:29] START HTTP API on :8088\n..."}
+{"ok": true, "logs": "[2026-10-25 23:28:42] REJECT auth ip=127.0.0.1\n..."}
+```
+
+---
+
+### 7. 创建新模板
+
+- **路径**：`/api/admin/create_template`
+- **方法**：`POST`
+
+#### 参数
+
+| 参数 | 必填 | 说明 |
+| :--- | :---: | :--- |
+| `id` | 是 | 模板 ID（仅限英文字母、数字、短横线） |
+| `name` | 否 | 显示名称 |
+| `account` | 是 | 发信账户（如 `default`） |
+| `subject` | 是 | 邮件标题 |
+| `api_fields` | 否 | API 变量映射（如 `code:{code}`） |
+| `html` | 是 | 邮件正文 HTML 源码 |
+| `is_web` | 否 | 是否在 Web 端显示（`true` / `false`） |
+| `web_fields` | 否 | Web 变量映射（如 `验证码;code`） |
+
+#### POST 请求示例（JSON）
+
+```http
+POST /api/admin/create_template HTTP/1.1
+Host: 127.0.0.1:8088
+X-Admin-Key: YOUR_ADMIN_KEY
+Content-Type: application/json
+Content-Length: 245
+
+{
+  "id": "v2",
+  "name": "新功能通知",
+  "account": "default",
+  "subject": "系统更新通知",
+  "api_fields": "code:{code}",
+  "html": "<h1>Hello {code}</h1>",
+  "is_web": true,
+  "web_fields": "验证码;code"
+}
+```
+
+#### 返回示例
+
+```json
+{"ok": true, "msg": "template created/updated successfully"}
+```
+
+---
+
+### 8. 增量更新模板
+
+- **路径**：`/api/admin/update_template`
+- **方法**：`POST`
+
+#### 参数
+
+| 参数 | 必填 | 说明 |
+| :--- | :---: | :--- |
+| `id` | 是 | 目标模板 ID |
+| `name` | 否 | 新显示名称（留空不改） |
+| `web_fields` | 否 | 新 Web 变量映射（留空不改） |
+
+#### POST 请求示例（JSON）
+
+```http
+POST /api/admin/update_template HTTP/1.1
+Host: 127.0.0.1:8088
+X-Admin-Key: YOUR_ADMIN_KEY
+Content-Type: application/json
+Content-Length: 60
+
+{"id": "v1", "name": "验证码新名称"}
+```
+
+#### 返回示例
+
+```json
+{"ok": true, "msg": "template info updated successfully"}
+```
+
+---
+
+### 9. 启用/禁用 Web 模板
+
+- **路径**：`/api/admin/toggle_template_web`
+- **方法**：`POST`
+
+#### 参数
+
+| 参数 | 必填 | 说明 |
+| :--- | :---: | :--- |
+| `id` | 是 | 目标模板 ID |
+| `action` | 是 | 操作：`enable`（显示）或 `disable`（隐藏） |
+
+#### POST 请求示例（JSON）
+
+```http
+POST /api/admin/toggle_template_web HTTP/1.1
+Host: 127.0.0.1:8088
+X-Admin-Key: YOUR_ADMIN_KEY
+Content-Type: application/json
+Content-Length: 30
+
+{"id": "v1", "action": "disable"}
+```
+
+#### 返回示例
+
+```json
+{"ok": true, "msg": "template web disabled"}
 ```
 
 ---
@@ -507,10 +636,14 @@ X-Admin-Key: YOUR_ADMIN_KEY
 ### 10. 获取全量模板列表
 
 - **路径**：`/api/admin/list_templates`
-- **方法**：GET
-- **说明**：与 `/api/templates` 不同，此接口包含被隐藏的纯 API 模板。
+- **方法**：`GET` 或 `POST`
+- **说明**：与 `/api/templates` 不同，此接口包含所有被隐藏的模板。
 
-**请求示例**
+#### 参数
+
+无（GET 无需传参，POST 传空 JSON `{}`）。
+
+#### GET 请求示例
 
 ```http
 GET /api/admin/list_templates HTTP/1.1
@@ -518,8 +651,20 @@ Host: 127.0.0.1:8088
 X-Admin-Key: YOUR_ADMIN_KEY
 ```
 
-**返回示例**
+#### POST 请求示例（JSON）
+
+```http
+POST /api/admin/list_templates HTTP/1.1
+Host: 127.0.0.1:8088
+X-Admin-Key: YOUR_ADMIN_KEY
+Content-Type: application/json
+Content-Length: 2
+
+{}
+```
+
+#### 返回示例
 
 ```json
-{"ok": true, "templates": [{"id": "v1", "name": "验证码", "is_web": true}]}
+{"ok": true, "templates": [{"id": "v1", "name": "验证码", "is_web": false}]}
 ```
