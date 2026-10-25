@@ -32,7 +32,7 @@ WEB_DIR = os.path.join(BASE_DIR, "web")
 ASSETS_DIR = os.path.join(BASE_DIR, "assets")
 
 _keys_cache = None
-_keys_lock = threading.Lock()
+_keys_lock = threading.RLock()
 _temp_key_lock = threading.Lock()
 
 # ==================== 核心启动时间 ====================
@@ -827,67 +827,77 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if not is_admin(admin_key):
                     self._resp(401, {"ok": False, "error": "admin unauthorized"})
                     return
-                data = load_keys()
-                new_id = max([key_obj["id"] for key_obj in data["keys"]], default=0) + 1
-                new_key = secrets.token_urlsafe(32)
-                perm = p.get("perm", "send")
-                if perm not in ("send", "admin"): perm = "send"
-                data["keys"].append({
-                    "id": new_id,
-                    "key": new_key,
-                    "status": "active",
-                    "perm": perm,
-                    "created": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "note": (p.get("note") or "").strip(),
-                })
-                save_keys(data)
+                
+                with _keys_lock:
+                    data = load_keys()
+                    new_id = max([key_obj["id"] for key_obj in data["keys"]], default=0) + 1
+                    new_key = secrets.token_urlsafe(32)
+                    perm = p.get("perm", "send")
+                    if perm not in ("send", "admin"): perm = "send"
+                    data["keys"].append({
+                        "id": new_id,
+                        "key": new_key,
+                        "status": "active",
+                        "perm": perm,
+                        "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "note": (p.get("note") or "").strip(),
+                    })
+                    save_keys(data)
                 
                 audit(f"KEY_CREATE id={new_id} perm={perm} note='{p.get('note', '')}' by_admin={admin_id} ip={client_ip}")
                 self._resp(200, {"ok": True, "id": new_id, "key": new_key, "perm": perm})
                 return
-
+                
             if path == "/api/keys/revoke":
                 if not is_admin(admin_key):
                     self._resp(401, {"ok": False, "error": "admin unauthorized"})
                     return
-                data = load_keys()
+                
                 target_id = p.get("id", "")
                 found = False
-                for key_obj in data["keys"]:
-                    if str(key_obj["id"]) == str(target_id):
-                        key_obj["status"] = "revoked"
-                        found = True
-                        break
+                
+                with _keys_lock:
+                    data = load_keys()
+                    for key_obj in data["keys"]:
+                        if str(key_obj["id"]) == str(target_id):
+                            key_obj["status"] = "revoked"
+                            found = True
+                            break
+                    if found:
+                        save_keys(data)
+                
                 if not found:
                     self._resp(404, {"ok": False, "error": "key not found"})
                     return
-                save_keys(data)
-                
                 audit(f"KEY_REVOKE id={target_id} by_admin={admin_id} ip={client_ip}")
                 self._resp(200, {"ok": True, "revoked_id": target_id})
                 return
-
+                
             if path == "/api/keys/perm":
                 if not is_admin(admin_key):
                     self._resp(401, {"ok": False, "error": "admin unauthorized"})
                     return
-                data = load_keys()
+                
                 target_id = p.get("id", "")
                 new_perm = p.get("perm", "")
                 if new_perm not in ("send", "admin"):
                     self._resp(400, {"ok": False, "error": "perm must be send or admin"})
                     return
+                
                 found = False
-                for key_obj in data["keys"]:
-                    if str(key_obj["id"]) == str(target_id):
-                        key_obj["perm"] = new_perm
-                        found = True
-                        break
+                with _keys_lock:
+                    data = load_keys()
+                    for key_obj in data["keys"]:
+                        if str(key_obj["id"]) == str(target_id):
+                            key_obj["perm"] = new_perm
+                            found = True
+                            break
+                    if found:
+                        save_keys(data)
+                        
                 if not found:
                     self._resp(404, {"ok": False, "error": "key not found"})
                     return
-                save_keys(data)
-                
                 audit(f"KEY_PERM_CHANGE id={target_id} new_perm={new_perm} by_admin={admin_id} ip={client_ip}")
                 self._resp(200, {"ok": True, "id": target_id, "perm": new_perm})
                 return
