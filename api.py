@@ -36,7 +36,7 @@ _keys_lock = threading.Lock()
 _temp_key_lock = threading.Lock()
 
 # ==================== 核心启动时间 ====================
-START_TIME = time.time() # 记录程序启动的绝对时间
+START_TIME = time.time() 
 
 # ==================== 监控统计 ====================
 STATS_SUCCESS = 0
@@ -146,7 +146,7 @@ def init_wizard():
             "rate_limit_ip_per_min": 10,
             "rate_limit_key_per_min": 30,
             "max_concurrent_sends": 5,
-            "enable_custom_background": true,
+            "enable_custom_background": False,
             "accounts": {
                 "default": {
                     "smtp_host": smtp_host,
@@ -166,7 +166,7 @@ def init_wizard():
             json.dump(config, f, ensure_ascii=False, indent=4)
         os.chmod(CONFIG_PATH, 0o600)
         
-        print("\n✅ 配置已成功保存到 config.json！")
+        print("\n配置已成功保存到 config.json！")
 
         admin_key = secrets.token_urlsafe(32)
         temp_test_key = "TEMP_TEST_" + secrets.token_urlsafe(16)
@@ -376,6 +376,11 @@ def audit(msg):
         try:
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {safe_msg}")
             log_path = os.path.join(BASE_DIR, "api.log")
+            
+            # 防爆盘：超过10MB自动清空
+            if os.path.exists(log_path) and os.path.getsize(log_path) > 10 * 1024 * 1024:
+                os.remove(log_path)
+                
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {safe_msg}\n")
         except Exception:
@@ -1054,26 +1059,46 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     self._resp(401, {"ok": False, "error": "admin unauthorized"})
                     return
                 
-            lines_str = p.get("lines", "50")
+                lines_str = p.get("lines", "50")
                 if not lines_str.isdigit():
                     self._resp(400, {"ok": False, "error": "lines must be a positive integer"})
                     return
 
-            limit = int(lines_str)
-              if limit < 1 or limit > 500:
-                  self._resp(400, {"ok": False, "error": "lines limit must be between 1 and 500"})
-                  return
+                limit = int(lines_str)
+                if limit < 1 or limit > 500:
+                    self._resp(400, {"ok": False, "error": "lines limit must be between 1 and 500"})
+                    return
                 
-            log_path = os.path.join(BASE_DIR, "api.log")
-            if not os.path.exists(log_path):
+                log_path = os.path.join(BASE_DIR, "api.log")
+                if not os.path.exists(log_path):
                     self._resp(200, {"ok": True, "logs": "Log file empty or not found."})
                     return
                 
                 try:
-                    from collections import deque
-                    with open(log_path, "r", encoding="utf-8") as f:
-                        last_lines = list(deque(f, maxlen=limit))
-                    self._resp(200, {"ok": True, "logs": "".join(last_lines)})
+                    with open(log_path, "rb") as f:
+                        f.seek(0, 2)
+                        end = f.tell()
+                        if end == 0:
+                            self._resp(200, {"ok": True, "logs": "Log file is empty."})
+                            return
+                        
+                        size = end
+                        block_size = 4096
+                        lines_found = 0
+                        buffer = b""
+
+                        while size > 0 and lines_found <= limit:
+                            size = max(0, size - block_size)
+                            f.seek(size)
+                            chunk = f.read(min(block_size, end - size))
+                            buffer = chunk + buffer
+                            lines_found = buffer.count(b"\n")
+
+                        decoded = buffer.decode("utf-8", errors="ignore")
+                        last_lines = decoded.splitlines()[-limit:]
+                        logs_str = "\n".join(last_lines)
+
+                    self._resp(200, {"ok": True, "logs": logs_str})
                 except Exception as e:
                     self._resp(500, {"ok": False, "error": f"read log error: {e}"})
                 return
