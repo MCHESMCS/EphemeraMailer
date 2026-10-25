@@ -1064,8 +1064,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                   self._resp(400, {"ok": False, "error": "lines limit must be between 1 and 500"})
                   return
                 
-                log_path = os.path.join(BASE_DIR, "api.log")
-                if not os.path.exists(log_path):
+            log_path = os.path.join(BASE_DIR, "api.log")
+              if not os.path.exists(log_path):
                     self._resp(200, {"ok": True, "logs": "Log file empty or not found."})
                     return
                 
