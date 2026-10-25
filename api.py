@@ -554,16 +554,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
         d = {}
         for k, v in urllib.parse.parse_qs(parsed.query, keep_blank_values=True).items():
             d[k] = v[0]
+            
         try:
-            length = int(self.headers.get("Content-Length", 0) or 0)
-            # 长度超过1mb给你骨灰扬咯
-            if length > 1024 * 1024:
-                self.close_connection = True  # 你给我滚出服务器
-                return None 
-                
+            raw_length = self.headers.get("Content-Length", "0")
+            
+            length = int(raw_length)
+            
+            # 如果你是攻击者就给我爬，如果你是管理员就别这样写
+            if length < 0 or length > 1024 * 1024:
+                self.close_connection = True
+                return None
+            
             if length > 0:
                 raw = self.rfile.read(length)
-                if not raw: return d
+                if not raw: 
+                    return d
                 
                 content_type = self.headers.get("Content-Type", "")
                 
@@ -582,8 +587,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                             d.update(body)
                     except Exception:
                         pass
+
+        except ValueError:
+            # 你真以为我不知道你发这个请求是要几把干啥吗
+            self.close_connection = True
+            return None
         except Exception as e:
             audit(f"PARAMS_LEN_ERR {repr(e)}")
+            self.close_connection = True
+            return None
+            
         return d
 
     def do_GET(self): self._route("GET")
