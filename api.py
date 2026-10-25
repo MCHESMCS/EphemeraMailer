@@ -555,6 +555,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
         for k, v in urllib.parse.parse_qs(parsed.query, keep_blank_values=True).items():
             d[k] = v[0]
             
+        if self.headers.get("Transfer-Encoding") and self.headers.get("Content-Length"):
+            self.close_connection = True
+            return None
+
+        # 诶我记得没错的话整个后端不支持这东西吧，谁发谁死妈
+        if self.headers.get("Transfer-Encoding"):
+            self.close_connection = True
+            return None
+            
+        # 我认为我的前端不会这样发请求，那请求哪来的你猜呢
+        # 双料特工
+        cl_values = self.headers.get_all("Content-Length")
+        if cl_values and len(cl_values) > 1:
+            self.close_connection = True
+            return None
+            
         try:
             raw_length = self.headers.get("Content-Length", "0")
             
