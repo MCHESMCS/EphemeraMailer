@@ -1065,7 +1065,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                   return
                 
             log_path = os.path.join(BASE_DIR, "api.log")
-              if not os.path.exists(log_path):
+            if not os.path.exists(log_path):
                     self._resp(200, {"ok": True, "logs": "Log file empty or not found."})
                     return
                 
