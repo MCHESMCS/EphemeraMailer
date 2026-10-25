@@ -104,22 +104,22 @@ def init_wizard():
     print("="*60)
     
     try:
-        listen_port = int(input("1. HTTP API 监听端口 [默认 8088]: ").strip() or 8088)
-        enable_get = input("2. 是否允许 GET 请求发信? (y/n) [默认 n]: ").strip().lower() == "y"
-        enable_web = input("3. 是否开启 HTTPS Web 发信页? (y/n) [默认 n]: ").strip().lower() == "y"
+        listen_port = int(input("1. HTTP API/Web 监听端口 [默认 8088]: ").strip() or 8088)
+        https_port = int(input("2. HTTPS API/Web 监听端口 [默认 8443]: ").strip() or 8443)
         
-        https_port = 8443
+        enable_get = input("3. 是否允许 GET 请求发信? (y/n) [默认 n]: ").strip().lower() == "y"
+        enable_web = input("4. 是否开启 HTTPS Web 发信页? (y/n) [默认 y]: ").strip().lower() != "n"
+        
         certfile = "certs/server.crt"
         keyfile = "certs/server.key"
         if enable_web:
-            https_port = int(input("   - HTTPS 监听端口 [默认 8443]: ").strip() or 8443)
             certfile = input("   - 证书路径 [默认 certs/server.crt]: ").strip() or "certs/server.crt"
             keyfile = input("   - 私钥路径 [默认 certs/server.key]: ").strip() or "certs/server.key"
 
-        admin_path = input("4. 管理后台隐藏路径 [默认 /my_secret_admin]: ").strip() or "/my_secret_admin"
+        admin_path = input("5. 管理后台隐藏路径 [默认 /my_secret_admin]: ").strip() or "/my_secret_admin"
         
         print("\n--- 发信账户配置 ---")
-        smtp_host = input("5. SMTP 服务器地址 [默认 127.0.0.1]: ").strip() or "127.0.0.1"
+        smtp_host = input("6. SMTP 服务器地址 [默认 127.0.0.1]: ").strip() or "127.0.0.1"
         smtp_port = int(input("   - SMTP 端口 [默认 465]: ").strip() or 465)
         
         mode_in = input("   - 连接模式 (ssl/starttls/plain) [默认 ssl]: ").strip().lower()
@@ -133,20 +133,23 @@ def init_wizard():
         if "@" in helo_host or "." not in helo_host:
             helo_host = "localhost"
             
-        ignore_ssl = input("   - 是否忽略 SSL 证书校验? (y/n) [默认 n]: ").strip().lower() != "y"
+        ignore_ssl = input("   - 是否忽略 SMTP SSL 证书校验? (y/n) [默认 n]: ").strip().lower() == "y"
 
         config = {
             "listen_port": listen_port,
-            "enable_get": enable_get,
-            "enable_web_send": enable_web,
             "https_port": https_port,
+            "enable_get": enable_get,
+            "enable_web_http": False,
+            "enable_api_http": True,
+            "enable_web_https": enable_web,
+            "enable_api_https": True,
             "certfile": certfile,
             "keyfile": keyfile,
             "admin_path": admin_path,
             "rate_limit_ip_per_min": 10,
             "rate_limit_key_per_min": 30,
             "max_concurrent_sends": 5,
-            "enable_custom_background": False,
+            "enable_custom_background": True,
             "accounts": {
                 "default": {
                     "smtp_host": smtp_host,
@@ -166,7 +169,7 @@ def init_wizard():
             json.dump(config, f, ensure_ascii=False, indent=4)
         os.chmod(CONFIG_PATH, 0o600)
         
-        print("\n配置已成功保存到 config.json！")
+        print("\n✅ 配置已成功保存到 config.json！")
 
         admin_key = secrets.token_urlsafe(32)
         temp_test_key = "TEMP_TEST_" + secrets.token_urlsafe(16)
@@ -374,10 +377,10 @@ def audit(msg):
     safe_msg = str(msg).replace('\n', ' ').replace('\r', '')
     with _log_lock:
         try:
-            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {safe_msg}")
+            # 加上颜色前缀，终端里看起来会非常清爽
+            print(f"\033[90m[{time.strftime('%Y-%m-%d %H:%M:%S')}]\033[0m {safe_msg}")
             log_path = os.path.join(BASE_DIR, "api.log")
             
-            # 防爆盘：超过10MB自动清空
             if os.path.exists(log_path) and os.path.getsize(log_path) > 10 * 1024 * 1024:
                 os.remove(log_path)
                 
@@ -409,8 +412,8 @@ def init_admin_key():
         save_keys(data)
         
         admin_path = CFG.get("admin_path", "/my_secret_admin")
-        port = CFG.get("https_port") if CFG.get("enable_web_send") else CFG.get("listen_port")
-        protocol = "https" if CFG.get("enable_web_send") else "http"
+        port = CFG.get("https_port") if CFG.get("enable_web_https", False) else CFG.get("listen_port")
+        protocol = "https" if CFG.get("enable_web_https", False) else "http"
 
         print("\n" + "="*60)
         print("⚠️  未检测到可用的 Admin 权限 Key，系统已自动注册！")
@@ -565,14 +568,37 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return
 
             parsed = urllib.parse.urlparse(self.path)
+            path = parsed.path
+            client_ip = self.client_address[0]
+
+            # ==================== 极致路由级拦截 ====================
+            is_https = isinstance(self.request, ssl.SSLSocket)
+            
+            if is_https:
+                enable_api = CFG.get("enable_api_https", True)
+                enable_web = CFG.get("enable_web_https", True)
+            else:
+                enable_api = CFG.get("enable_api_http", True)
+                enable_web = CFG.get("enable_web_http", False)
+
+            admin_path = CFG.get("admin_path", "/my_secret_admin")
+            is_web_req = (path == "/web" or path == admin_path)
+            is_api_req = path.startswith("/api/")
+
+            if is_web_req and not enable_web:
+                self.close_connection = True 
+                return
+
+            if is_api_req and not enable_api:
+                self.close_connection = True
+                return
+            # ========================================================
+
             p = self._params(parsed)
             if p is None:
                 record_reject()
                 self._resp(413, {"ok": False, "error": "Payload Too Large"})
                 return
-            
-            path = parsed.path
-            client_ip = self.client_address[0]
 
             # ================= 页面路由 =================
             if path == "/web" and method == "GET":
@@ -586,7 +612,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 else: self._html("<h1>Web page not found</h1>")
                 return
 
-            admin_path = CFG.get("admin_path", "/my_secret_admin")
             if path == admin_path and method == "GET":
                 admin_file = os.path.join(WEB_DIR, "admin.html")
                 if os.path.exists(admin_file):
@@ -1143,81 +1168,139 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except Exception:
                 pass
 
-# ==================== 关闭与启动 ====================
+# ==================== 多线程服务与启动 ====================
 class ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
 http_server_instance = None
 https_server_instance = None
-_shutdown_event = threading.Event()
 
 def run_http_server():
     global http_server_instance
-    audit(f"START HTTP API on :{CFG['listen_port']}")
-    http_server_instance = ThreadingHTTPServer(("0.0.0.0", CFG["listen_port"]), Handler)
+    port = CFG.get("listen_port", 8088)
+    audit(f"START HTTP Server on :{port}")
+    http_server_instance = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     http_server_instance.serve_forever()
 
 def run_https_server():
     global https_server_instance
     try:
+        port = CFG.get("https_port", 8443)
         cert_file = CFG["certfile"]
         key_file = CFG["keyfile"]
         if not os.path.isabs(cert_file): cert_file = os.path.join(BASE_DIR, cert_file)
         if not os.path.isabs(key_file): key_file = os.path.join(BASE_DIR, key_file)
 
-        https_server_instance = ThreadingHTTPServer(("0.0.0.0", CFG["https_port"]), Handler)
+        https_server_instance = ThreadingHTTPServer(("0.0.0.0", port), Handler)
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(certfile=cert_file, keyfile=key_file)
         https_server_instance.socket = ctx.wrap_socket(https_server_instance.socket, server_side=True)
         
-        audit(f"START HTTPS Web on :{CFG['https_port']}")
+        audit(f"START HTTPS Server on :{port}")
         https_server_instance.serve_forever()
     except Exception as e:
         audit(f"HTTPS_START_ERR {repr(e)}")
 
 def _do_shutdown():
-    try:
-        if http_server_instance:
-            http_server_instance.shutdown()
-            http_server_instance.server_close()
-        if https_server_instance:
-            https_server_instance.shutdown()
-            https_server_instance.server_close()
-    except Exception:
-        pass
-
-def _monitor_shutdown():
-    for i in range(1, 3): 
-        time.sleep(1)
-        running_tasks = (max_workers * 2) - semaphore._value
-        if running_tasks > 0:
-            print(f"[~] 正在等待 {running_tasks} 个发信任务完成...")
-        else:
-            print(f"[~] 邮件队列已清空，等待进程退出...")
-            break
+    print("[*] 正在关闭底层网络监听端口...")
+    for srv in [http_server_instance, https_server_instance]:
+        if srv:
+            try:
+                srv.shutdown()
+                srv.server_close()
+            except Exception:
+                pass
 
 def graceful_shutdown(signum, frame):
     print("\n[*] 收到终止信号，正在关闭...")
     
+    # 启动子线程去关网络端口，因为 srv.shutdown() 是阻塞的
     threading.Thread(target=_do_shutdown, daemon=True).start()
-    threading.Thread(target=_monitor_shutdown, daemon=True).start()
     
-    time.sleep(3)
-    running_tasks = (max_workers * 2) - semaphore._value
+    for i in range(3, 0, -1):
+        time.sleep(1)
+        running_tasks = (max_workers * 2) - semaphore._value
+        if running_tasks > 0:
+            print(f"[~] 正在等待 {running_tasks} 个发信任务完成... ({i}s)")
+        else:
+            print("[+] 邮件队列已清空")
+            break
+    else:       
+        if running_tasks > 0:
+            print(f"[?] 即将有 {running_tasks} 个发信任务被丢弃")
+                     
+    print("[+] 服务器已安全关闭，进程退出")
+    sys.exit(0)
     
-    if running_tasks > 0:
-        print(f"\n[!] 退出成功：仍有 {running_tasks} 个发信线程被系统回收")
-    else:
-        print("\n[+] 退出成功：邮件队列已清空，监听端口已释放")
-        
-    os._exit(0)
-
+    
 signal.signal(signal.SIGINT, graceful_shutdown)
 signal.signal(signal.SIGTERM, graceful_shutdown)
 
 if __name__ == "__main__":
     init_admin_key()
-    if CFG.get("enable_web_send", False):
+    
+    # ==================== 宏观依赖强管控 ====================
+    http_api_on = CFG.get("enable_api_http", True)
+    http_web_on = CFG.get("enable_web_http", False)
+    
+    if not http_api_on:
+        if http_web_on:
+            print("\n[!] 警告: HTTP API 未开启，HTTP Web 无法独立运行，已强制关闭 HTTP Web")
+        http_web_on = False
+        
+    need_http = http_api_on or http_web_on
+
+    https_api_on = CFG.get("enable_api_https", True)
+    https_web_on = CFG.get("enable_web_https", True)
+    
+    if not https_api_on:
+        if https_web_on:
+            print("\n[!] 警告: HTTPS API 未开启，HTTPS Web 无法独立运行，已强制关闭 HTTPS Web")
+        https_web_on = False
+        
+    need_https = https_api_on or https_web_on
+    # ======================================================
+
+    print("\n" + "="*45)
+    print("EphemeraMailer 启动前依赖检查")
+    print("="*45)
+    
+    if need_http:
+        print(f"  [HTTP]  启动 (API: {'✅ 开' if http_api_on else '❌ 关'} | Web: {'✅ 开' if http_web_on else '❌ 关'})")
+    else:
+        print("  [HTTP]  ❌ 完全关闭 (API和Web都未开启)")
+
+    if need_https:
+        print(f"  [HTTPS] 启动 (API: {'✅ 开' if https_api_on else '❌ 关'} | Web: {'✅ 开' if https_web_on else '❌ 关'})")
+    else:
+        print("  [HTTPS] ❌ 完全关闭 (API和Web都未开启)")
+    
+    print("="*45 + "\n")
+
+    # 物理绑定，强制按顺序输出
+    if need_https:
         threading.Thread(target=run_https_server, daemon=True).start()
-    run_http_server()
+        time.sleep(0.05) 
+    if need_http:
+        threading.Thread(target=run_http_server, daemon=True).start()
+        time.sleep(0.05) 
+
+    print("\n" + "="*45)
+    print("服务已就绪 等待请求... (按 Ctrl+C 退出)")
+    print("="*45 + "\n")
+    
+    if not need_http and not need_https:
+       print("\n" + "="*45)
+       print("服务启动中止：正在进行光合作用")
+       print("="*45)
+       print("[Server]：开摆咯～")
+       print("(检测到 HTTP 和 HTTPS 的 API 与 Web 全部未启动)")
+       print("请检查config.json中的enable_api/enable_web配置")
+       print("="*45 + "\n")
+
+    main_event = threading.Event()
+    try:
+        main_event.wait()
+    except KeyboardInterrupt:
+        graceful_shutdown(None, None)
