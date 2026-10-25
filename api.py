@@ -30,6 +30,8 @@ KEYS_PATH = os.path.join(BASE_DIR, "keys.json")
 HTML_DIR = os.path.join(BASE_DIR, "html")
 WEB_DIR = os.path.join(BASE_DIR, "web")
 ASSETS_DIR = os.path.join(BASE_DIR, "assets")
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+LATEST_LOG = os.path.join(LOG_DIR, "latest.log")
 
 _keys_cache = None
 _keys_lock = threading.RLock()
@@ -405,12 +407,16 @@ def audit(msg):
         try:
             # 加上颜色前缀，终端里看起来会非常清爽
             print(f"\033[90m[{time.strftime('%Y-%m-%d %H:%M:%S')}]\033[0m {safe_msg}")
-            log_path = os.path.join(BASE_DIR, "api.log")
             
-            if os.path.exists(log_path) and os.path.getsize(log_path) > 10 * 1024 * 1024:
-                os.remove(log_path)
+            if not os.path.exists(LOG_DIR):
+                os.makedirs(LOG_DIR)
                 
-            with open(log_path, "a", encoding="utf-8") as f:
+            if os.path.exists(LATEST_LOG) and os.path.getsize(LATEST_LOG) > 10 * 1024 * 1024:
+                archive_name = f"history_{time.strftime('%Y%m%d_%H%M%S')}.log"
+                archive_path = os.path.join(LOG_DIR, archive_name)
+                os.rename(LATEST_LOG, archive_path)
+                
+            with open(LATEST_LOG, "a", encoding="utf-8") as f:
                 f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {safe_msg}\n")
         except Exception:
             pass
@@ -1184,7 +1190,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     self._resp(400, {"ok": False, "error": "lines limit must be between 1 and 500"})
                     return
                 
-                log_path = os.path.join(BASE_DIR, "api.log")
+                log_path = LATEST_LOG
                 if not os.path.exists(log_path):
                     self._resp(200, {"ok": True, "logs": "Log file empty or not found."})
                     return
