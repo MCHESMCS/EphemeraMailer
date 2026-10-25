@@ -1,0 +1,1475 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Ephemera · Key Management</title>
+<style>
+  :root {
+    /* ===== 暗色主题（默认） ===== */
+    --bg:        #0a0f1c;
+    --panel:     #111a2e;
+    --panel-2:   #16213a;
+    --line:      #1e2d4a;
+    --line-2:    #2a3d5f;
+    --txt:       #dbe4f0;
+    --txt-dim:   #7b8aa3;
+    --txt-mute:  #4a5a75;
+    --accent:    #38bdf8;
+    --accent-2:  #0ea5e9;
+    --accent-txt:#06101f;
+    --ok:        #34d399;
+    --ok-bg:     rgba(52,211,153,.10);
+    --warn:      #fbbf24;
+    --warn-bg:   rgba(251,191,36,.10);
+    --danger:    #f87171;
+    --danger-bg: rgba(248,113,113,.10);
+    --admin:     #818cf8;
+    --admin-bg:  rgba(129,140,248,.12);
+    --send:      #fbbf24;
+    --send-bg:   rgba(251,191,36,.12);
+    --radius:    12px;
+    --shadow:    0 4px 24px rgba(0,0,0,.35);
+    --card-head-bg: rgba(255,255,255,.015);
+    --card-hover:   rgba(255,255,255,.02);
+    --row-hover:    rgba(56,189,248,.03);
+    --revoked-bg:   rgba(0,0,0,.12);
+    --mobile-row-bg:rgba(0,0,0,.15);
+    --overlay-bg:   rgba(2,6,16,.72);
+    --log-bg:       #06090f;
+    --log-txt:      #7b8aa3;
+    --header-bg:    rgba(10, 15, 28, 0.6);
+
+    /* 壁纸遮罩与卡片透明度 */
+    --bg-mask-color: rgba(10,15,28,0.70);
+    --card-alpha: 0.88; /* 卡片透明度 */
+    --logo-bg: linear-gradient(135deg, var(--accent), var(--admin));
+
+    /* 卡片专用底色 + 中性压暗层（不含主题色相） */
+    --card-bg-color: var(--panel);
+    --page-mask: rgba(2,6,16,.45);
+  }
+
+  /* ===== 亮色主题 · 浅米黄 ===== */
+  html[data-theme="light"] {
+    --bg:        #f2efe9;
+    --panel:     #faf9f6;
+    --panel-2:   #f0ebe1;
+    --line:      #e0dcd3;
+    --line-2:    #d1ccbf;
+    --txt:       #2d2a22;
+    --txt-dim:   #5c5544;
+    --txt-mute:  #948b78;
+    --accent:    #0d7a5f;
+    --accent-2:  #0a6350;
+    --accent-txt:#ffffff;
+    --ok:        #15803d;
+    --ok-bg:     rgba(21,128,61,.10);
+    --warn:      #b45309;
+    --warn-bg:   rgba(180,83,9,.10);
+    --danger:    #b91c1c;
+    --danger-bg: rgba(185,28,28,.10);
+    --admin:     #5b4fc7;
+    --admin-bg:  rgba(91,79,199,.10);
+    --send:      #b45309;
+    --send-bg:   rgba(180,83,9,.10);
+    --shadow:    0 4px 20px rgba(80,70,50,.08);
+    --card-head-bg: rgba(120,105,80,.03);
+    --card-hover:   rgba(120,105,80,.05);
+    --row-hover:    rgba(13,122,95,.06);
+    --revoked-bg:   rgba(120,105,80,.04);
+    --mobile-row-bg:rgba(120,105,80,.04);
+    --overlay-bg:   rgba(60,55,40,.40);
+    --log-bg:       #1a1f2b;
+    --log-txt:      #cbd5e1;
+    --header-bg:    rgba(242, 239, 233, 0.7);
+
+    --bg-mask-color: rgba(242,239,233,0.60);
+    --card-alpha: 0.92;
+    --logo-bg: linear-gradient(135deg, #0d7a5f, #1e3a8a);
+
+    --card-bg-color: var(--panel);
+    --page-mask: rgba(255,255,255,.12);
+  }
+
+  /* ===== 亮色主题 · 浅绿 ===== */
+  html[data-theme="light"][data-tone="green"] {
+    --bg:        #ecf2e9;
+    --panel:     #f6faf3;
+    --panel-2:   #e2ebda;
+    --line:      #d5e0cb;
+    --line-2:    #c4d2b7;
+    --txt:       #1f2a1c;
+    --txt-dim:   #4b5a44;
+    --txt-mute:  #7f8d78;
+    --accent:    #1c7a4a;
+    --accent-2:  #14643c;
+    --accent-txt:#ffffff;
+    --ok:        #15803d;
+    --ok-bg:     rgba(21,128,61,.10);
+    --warn:      #b45309;
+    --warn-bg:   rgba(180,83,9,.10);
+    --danger:    #b91c1c;
+    --danger-bg: rgba(185,28,28,.10);
+    --admin:     #5b4fc7;
+    --admin-bg:  rgba(91,79,199,.10);
+    --send:      #b45309;
+    --send-bg:   rgba(180,83,9,.10);
+    --shadow:    0 4px 20px rgba(60,80,50,.08);
+    --card-head-bg: rgba(70,100,60,.03);
+    --card-hover:   rgba(70,100,60,.05);
+    --row-hover:    rgba(28,122,74,.06);
+    --revoked-bg:   rgba(70,100,60,.04);
+    --mobile-row-bg:rgba(70,100,60,.04);
+    --overlay-bg:   rgba(50,70,40,.40);
+    --log-bg:       #14201a;
+    --log-txt:      #cbd5e1;
+    --header-bg:    rgba(236, 242, 233, 0.7);
+
+    --bg-mask-color: rgba(236,242,233,0.60);
+    --card-alpha: 0.92;
+    --logo-bg: linear-gradient(135deg, #1c7a4a, #0f766e);
+
+    --card-bg-color: var(--panel);
+    --page-mask: rgba(255,255,255,.12);
+  }
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { height:100%; }
+
+  /* 壁纸层：磨砂 + 轻微压饱和 + 微暗，并放大避免模糊边缘露白 */
+  body::before {
+    content: ''; position: fixed; inset: -3%; z-index: -2; pointer-events: none;
+    opacity: 0; transition: opacity .5s ease, filter .5s ease;
+    background: center / cover no-repeat;
+    filter: blur(6px) saturate(.92) brightness(.92);
+    transform: scale(1.04);
+  }
+  /* 压暗层：中性色，不含主题色相 */
+  body::after {
+    content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+    opacity: 0; transition: opacity .5s ease;
+    background: var(--page-mask);
+  }
+  html.has-bg body::before,
+  html.has-bg body::after { opacity: 1; }
+
+  body {
+    background: var(--bg);
+    color: var(--txt);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.5;
+    transition: background-color .3s ease, color .3s ease;
+  }
+
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 44px 24px 80px; }
+
+  .head {
+    display: flex; justify-content: space-between; align-items: center;
+    flex-wrap: wrap; gap: 16px; margin-bottom: 28px; padding: 16px 22px;
+    border: 1px solid var(--line); border-radius: var(--radius);
+    background: var(--header-bg);
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    box-shadow: 0 4px 12px rgba(0,0,0,.05);
+  }
+
+  .brand { display: flex; align-items: center; gap: 16px; }
+  .logo {
+    width: 44px; height: 44px; display: grid; place-items: center; border-radius: 12px;
+    background: var(--logo-bg);
+    box-shadow: 0 4px 16px rgba(0,0,0,.15); flex-shrink: 0;
+    isolation: isolate;
+  }
+  .logo svg { width: 24px; height: 24px; stroke: var(--accent-txt); stroke-width: 2.2; fill: none; }
+  .brand h1 { font-size: 20px; font-weight: 700; letter-spacing: .5px; color: var(--txt); }
+  .brand h1 span { color: var(--txt-mute); font-weight: 400; }
+  .brand p { font-size: 12px; color: var(--txt-mute); margin-top: 2px; letter-spacing: .3px; }
+
+  .head-right { display: flex; align-items: center; gap: 12px; }
+
+  .badge-l5 {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; letter-spacing: 1px;
+    padding: 5px 12px; border-radius: 999px; color: var(--danger);
+    border: 1px solid rgba(248,113,113,.25); text-transform: uppercase;
+    background-color: var(--panel);
+    background-image: linear-gradient(var(--danger-bg), var(--danger-bg));
+  }
+  .badge-l5::before { content:''; width:6px; height:6px; border-radius:50%; background: var(--danger); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100% { opacity:1; box-shadow:0 0 0 0 rgba(248,113,113,.5); } 50% { opacity:.6; box-shadow:0 0 0 5px rgba(248,113,113,0); } }
+
+  /* ---------- 主题切换与色调 ---------- */
+  .theme-toggle {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 36px; height: 36px; border-radius: 10px;
+    background: var(--panel); border: 1px solid var(--line-2); color: var(--txt-dim);
+    cursor: pointer; transition: all .18s ease; flex-shrink: 0;
+  }
+  .theme-toggle:hover { color: var(--accent); border-color: var(--accent); background: var(--panel-2); transform: translateY(-1px); }
+  .theme-toggle svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 2; }
+  .theme-toggle .icon-sun  { display: none; }
+  .theme-toggle .icon-moon { display: block; }
+  html[data-theme="light"] .theme-toggle .icon-sun  { display: block; }
+  html[data-theme="light"] .theme-toggle .icon-moon { display: none; }
+
+  .tone-switcher { display: none; align-items: center; gap: 4px; padding: 3px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line-2); flex-shrink: 0; }
+  html[data-theme="light"] .tone-switcher { display: inline-flex; }
+  .tone-btn { width: 28px; height: 28px; border-radius: 7px; border: 1px solid transparent; background: transparent; cursor: pointer; padding: 0; display: grid; place-items: center; transition: all .15s ease; }
+  .tone-btn:hover { transform: translateY(-1px); }
+  .tone-btn[data-tone-val="cream"] { background: #faf9f6; }
+  .tone-btn[data-tone-val="green"] { background: #f6faf3; }
+  .tone-btn.active { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(13,122,95,.2); }
+
+  .sys-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 15px; }
+  .sys-item { background: var(--bg); border-radius: 10px; padding: 16px; border: 1px solid var(--line-2); display: flex; flex-direction: column; gap: 8px; }
+  .sys-item .label { font-size: 11px; color: var(--txt-mute); text-transform: uppercase; letter-spacing: .5px; }
+  .sys-item .val { font-size: 18px; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: var(--accent); }
+  .sys-item .val.ok { color: var(--ok); }
+  .sys-item .val.danger { color: var(--danger); }
+
+  .grid { display: grid; grid-template-columns: 1.55fr 1fr; gap: 20px; align-items: start; }
+  .grid .col { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius); box-shadow: var(--shadow); animation: fadeUp .4s ease both;
+    position: relative; z-index: 10;
+    transition: background-color .3s ease, border-color .3s ease;
+  }
+  html.has-bg .card {
+    background: color-mix(in srgb, var(--card-bg-color) calc(var(--card-alpha) * 100%), transparent);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+  }
+  @supports not (background: color-mix(in srgb, red 50%, transparent)) {
+    html.has-bg .card { background: var(--panel); }
+  }
+  @keyframes fadeUp { from { opacity:0; transform: translateY(8px); } to { opacity:1; transform: translateY(0); } }
+  .card.z-index-super { z-index: 9999 !important; }
+
+  .card-head {
+    display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 15px 22px; border-bottom: 1px solid var(--line); background: var(--card-head-bg);
+    border-radius: var(--radius) var(--radius) 0 0;
+  }
+  .card-head h2 { font-size: 13px; font-weight: 600; letter-spacing: .8px; color: var(--txt-dim); text-transform: uppercase; display: flex; align-items: center; gap: 8px; }
+  .card-head h2::before { content:''; width:3px; height:14px; border-radius:2px; background: var(--accent); }
+  .card-body { padding: 22px; }
+
+  .field { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; align-items: end; }
+  .field.two { grid-template-columns: repeat(2, 1fr); }
+  .field.one { grid-template-columns: 1fr; }
+  .field .span-2 { grid-column: span 2; }
+  .field .span-all { grid-column: 1 / -1; }
+  .field .btn { justify-self: start; height: 43px; }
+
+  .form-label { font-size: 12px; color: var(--txt-mute); margin-bottom: 6px; display: block; }
+
+  input[type=password], input[type=text], textarea {
+    background: var(--bg); border: 1px solid var(--line-2); color: var(--txt);
+    padding: 11px 14px; border-radius: 9px; font-family: inherit; font-size: 13.5px;
+    transition: border-color .2s, box-shadow .2s, background .2s, color .3s; width: 100%;
+  }
+  input::placeholder, textarea::placeholder { color: var(--txt-mute); }
+  input:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(56,189,248,.12); background: var(--panel); }
+
+  .checkbox-wrap { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; font-size: 13px; color: var(--txt); padding: 4px 0; }
+  .checkbox-wrap input[type="checkbox"] { position: absolute; opacity: 0; width: 0; height: 0; }
+  .custom-checkbox { width: 18px; height: 18px; border-radius: 5px; border: 1.5px solid var(--line-2); background: var(--bg); display: grid; place-items: center; transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1); flex-shrink: 0; }
+  .custom-checkbox svg { width: 12px; height: 12px; stroke: var(--accent-txt); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; fill: none; opacity: 0; transform: scale(0.5); transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1); }
+  .checkbox-wrap input:checked ~ .custom-checkbox { background: var(--accent); border-color: var(--accent); }
+  .checkbox-wrap input:checked ~ .custom-checkbox svg { opacity: 1; transform: scale(1); }
+  .checkbox-wrap:hover .custom-checkbox { border-color: var(--accent); }
+
+  textarea { font-family: 'JetBrains Mono', 'Courier New', monospace; font-size: 12.5px; line-height: 1.6; resize: vertical; min-height: 120px; }
+
+  .custom-select-wrap { position: relative; user-select: none; width: 100%; }
+  .custom-select-trigger {
+    width: 100%; background: var(--bg); border: 1px solid var(--line-2); color: var(--txt);
+    padding: 11px 14px; border-radius: 9px; font-family: inherit; font-size: 13.5px;
+    transition: border-color .2s, box-shadow .2s, background .2s, color .3s; cursor: pointer;
+    display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 43px;
+  }
+  .custom-select-trigger span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .custom-select-wrap.open .custom-select-trigger { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(56,189,248,.12); background: var(--panel); }
+  .custom-select-trigger .chevron { width: 14px; height: 14px; stroke: var(--txt-mute); fill: none; stroke-width: 2; pointer-events: none; flex-shrink: 0; transition: transform .2s ease, stroke .2s; }
+  .custom-select-wrap.open .chevron { transform: rotate(180deg); stroke: var(--accent); }
+
+  .custom-options { position: absolute; top: calc(100% + 6px); left: 0; right: 0; background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.25); z-index: 99999; max-height: 220px; overflow-y: auto; opacity: 0; visibility: hidden; transform: translateY(-8px); transition: opacity .18s, transform .18s, visibility .18s; }
+  .custom-select-wrap.open .custom-options { opacity: 1; visibility: visible; transform: translateY(0); }
+  .custom-option { padding: 11px 14px; font-size: 13.5px; color: var(--txt-dim); cursor: pointer; transition: background .15s, color .15s; border-bottom: 1px solid var(--line); }
+  .custom-option:last-child { border-bottom: none; }
+  .custom-option:hover { background: var(--row-hover); color: var(--txt); }
+  .custom-option.selected { color: var(--accent); background: var(--row-hover); font-weight: 600; }
+
+  input:disabled, button:disabled { opacity: .5; cursor: not-allowed; }
+
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; background: var(--panel-2); color: var(--txt); border: 1px solid var(--line-2); padding: 10px 18px; border-radius: 9px; cursor: pointer; font-family: inherit; font-size: 13px; font-weight: 500; letter-spacing: .3px; transition: background .18s, border-color .18s, color .18s, transform .18s, box-shadow .18s; white-space: nowrap; }
+  .btn:hover:not(:disabled) { background: var(--line); border-color: var(--accent); color: var(--txt); transform: translateY(-1px); }
+  .btn:active:not(:disabled) { transform: translateY(0); }
+  .btn.primary { background: linear-gradient(135deg, var(--accent), var(--accent-2)); border-color: transparent; color: var(--accent-txt); font-weight: 700; box-shadow: 0 4px 16px rgba(56,189,248,.25); }
+  .btn.primary:hover:not(:disabled) { box-shadow: 0 6px 22px rgba(56,189,248,.4); color: var(--accent-txt); }
+  .btn.danger { background: var(--danger-bg); border-color: rgba(248,113,113,.3); color: var(--danger); }
+  .btn.danger:hover:not(:disabled) { background: rgba(248,113,113,.2); border-color: var(--danger); color: var(--danger); }
+  .btn.ghost { background: transparent; border-color: var(--line-2); color: var(--txt-dim); }
+  .btn.ghost:hover:not(:disabled) { background: var(--panel-2); color: var(--txt); }
+  .btn.sm { padding: 6px 12px; font-size: 12px; border-radius: 7px; }
+  .btn svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 2; }
+
+  .tableWrap { overflow: visible; border-radius: 0 0 var(--radius) var(--radius); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--txt-mute); font-weight: 600; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; padding: 12px 16px; border-bottom: 1px solid var(--line); white-space: nowrap; background: var(--card-head-bg); }
+  td { padding: 14px 16px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  tbody tr { transition: background .15s; }
+  tbody tr:hover { background: var(--row-hover); }
+  tbody tr:last-child td { border-bottom: none; }
+
+  .id-cell { color: var(--txt-mute); font-family: 'JetBrains Mono', monospace; font-size: 12.5px; }
+  .key-cell { font-family: 'JetBrains Mono', 'Courier New', monospace; font-size: 12px; color: var(--txt-dim); letter-spacing: .3px; word-break: break-all; }
+  .time-cell { color: var(--txt-mute); font-size: 12px; white-space: nowrap; }
+  .note-cell { color: var(--txt-dim); font-size: 12.5px; }
+
+  .tag { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; letter-spacing: .4px; white-space: nowrap; border: 1px solid transparent; }
+  .tag::before { content:''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+  .tag.active  { background: var(--ok-bg);     color: var(--ok);    border-color: rgba(52,211,153,.25); }
+  .tag.revoked { background: var(--danger-bg); color: var(--danger); border-color: rgba(248,113,113,.25); }
+  .tag.admin   { background: var(--admin-bg);  color: var(--admin); border-color: rgba(129,140,248,.25); }
+  .tag.send    { background: var(--send-bg);   color: var(--send);  border-color: rgba(251,191,36,.25); }
+
+  .actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: nowrap; }
+  .actions .custom-select-wrap { width: 104px; flex: none; }
+  .actions .custom-select-trigger { padding: 6px 10px; font-size: 12px; border-radius: 7px; min-height: 30px; }
+  .actions .custom-select-trigger .chevron { width: 12px; height: 12px; }
+
+  .pc-only { display: table-cell; }
+  .mobile-only { display: none; }
+
+  .msg { padding: 11px 14px; border-radius: 9px; font-size: 13px; margin-top: 14px; display: none; align-items: center; gap: 9px; border: 1px solid transparent; }
+  .msg.show { display: flex; animation: fadeUp .25s ease; }
+  .msg.ok  { background: var(--ok-bg);     color: var(--ok);    border-color: rgba(52,211,153,.25); }
+  .msg.err { background: var(--danger-bg); color: var(--danger); border-color: rgba(248,113,113,.25); }
+  .msg svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 2; flex-shrink: 0; }
+  .msg.in-list { margin: 14px 22px 0; }
+
+  .hide { display: none !important; }
+
+  .newkey { margin-top: 16px; padding: 18px; border-radius: 10px; background: linear-gradient(135deg, rgba(52,211,153,.06), rgba(56,189,248,.04)); border: 1px dashed rgba(52,211,153,.4); animation: fadeUp .3s ease; }
+  .newkey .lbl { display: flex; align-items: center; gap: 7px; color: var(--ok); font-size: 12px; font-weight: 600; margin-bottom: 10px; letter-spacing: .3px; }
+  .newkey .lbl svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 2; }
+  .newkey .val { display: block; background: var(--bg); padding: 12px 14px; border-radius: 8px; font-family: 'JetBrains Mono', 'Courier New', monospace; font-size: 13px; color: var(--ok); word-break: break-all; border: 1px solid var(--line); letter-spacing: .4px; }
+  .newkey .actions { margin-top: 12px; justify-content: flex-start; }
+
+  .login-card { max-width: 440px; margin: 60px auto 0; }
+  .login-icon { width: 56px; height: 56px; margin: 0 auto 20px; display: grid; place-items: center; border-radius: 16px; background: linear-gradient(135deg, rgba(56,189,248,.15), rgba(129,140,248,.12)); border: 1px solid rgba(56,189,248,.2); }
+  .login-icon svg { width: 26px; height: 26px; stroke: var(--accent); fill: none; stroke-width: 2; }
+  .login-title { text-align: center; font-size: 17px; font-weight: 600; margin-bottom: 6px; color: var(--txt); }
+  .login-sub { text-align: center; font-size: 12.5px; color: var(--txt-mute); margin-bottom: 24px; }
+  .login-card .field { grid-template-columns: 1fr; gap: 12px; }
+  .login-card .btn { width: 100%; padding: 12px; justify-self: stretch; height: auto; }
+
+  .muted { color: var(--txt-mute); }
+
+  .revoked-panel { border-top: 1px solid var(--line); background: var(--revoked-bg); }
+  .revoked-panel > summary { list-style: none; cursor: pointer; padding: 14px 22px; display: flex; align-items: center; gap: 10px; font-size: 12px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase; color: var(--txt-mute); user-select: none; transition: color .15s, background .15s; }
+  .revoked-panel > summary::-webkit-details-marker { display: none; }
+  .revoked-panel > summary::before { content: ''; width: 0; height: 0; border-left: 6px solid currentColor; border-top: 4px solid transparent; border-bottom: 4px solid transparent; transition: transform .2s ease; flex-shrink: 0; }
+  .revoked-panel[open] > summary::before { transform: rotate(90deg); }
+  .revoked-panel > summary:hover { color: var(--txt-dim); background: var(--card-hover); }
+
+  .revoked-count { margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--danger); background: var(--danger-bg); border: 1px solid rgba(248,113,113,.25); padding: 2px 9px; border-radius: 999px; }
+  .revoked-panel .tableWrap { border-top: 1px solid var(--line); }
+  .revoked-panel td { opacity: .78; }
+  .revoked-panel tbody tr:hover { background: var(--danger-bg); }
+
+  @keyframes revokeFlash { 0% { background: rgba(248,113,113,0); box-shadow: inset 0 0 0 0 rgba(248,113,113,0); } 25% { background: rgba(248,113,113,.14); box-shadow: inset 0 0 0 1px rgba(248,113,113,.35); } 50% { background: rgba(248,113,113,0); box-shadow: inset 0 0 0 0 rgba(248,113,113,0); } 75% { background: rgba(248,113,113,.14); box-shadow: inset 0 0 0 1px rgba(248,113,113,.35); } 100% { background: rgba(248,113,113,0); box-shadow: inset 0 0 0 0 rgba(248,113,113,0); } }
+  .revoked-panel tbody tr.flash { animation: revokeFlash 1.6s ease-in-out; }
+
+  .modal-mask { position: fixed; inset: 0; background: var(--overlay-bg); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 100000; opacity: 0; visibility: hidden; transition: opacity .18s ease, visibility .18s ease; }
+  .modal-mask.show { opacity: 1; visibility: visible; }
+  .modal { width: 100%; max-width: 400px; background: var(--panel); border: 1px solid var(--line-2); border-radius: 14px; box-shadow: 0 24px 60px rgba(0,0,0,.3); padding: 26px 24px 22px; transform: translateY(8px) scale(.98); transition: transform .2s cubic-bezier(.2,.8,.2,1); }
+  .modal-mask.show .modal { transform: translateY(0) scale(1); }
+  .modal-icon { width: 46px; height: 46px; border-radius: 12px; display: grid; place-items: center; margin-bottom: 16px; background: var(--danger-bg); border: 1px solid rgba(248,113,113,.28); }
+  .modal-icon svg { width: 22px; height: 22px; stroke: var(--danger); fill: none; stroke-width: 2; }
+  .modal-title { font-size: 16px; font-weight: 700; color: var(--txt); margin-bottom: 8px; }
+  .modal-desc { font-size: 13px; color: var(--txt-dim); line-height: 1.6; }
+  .modal-desc code { font-family: 'JetBrains Mono', monospace; color: var(--danger); background: var(--danger-bg); padding: 1px 6px; border-radius: 5px; font-size: 12px; }
+  .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 24px; }
+  .modal-actions .btn { min-width: 88px; }
+
+  .log-box { margin: 0; padding: 16px; background: var(--log-bg); color: var(--log-txt); font-family: 'JetBrains Mono', monospace; font-size: 12px; overflow-x: auto; max-height: 400px; white-space: pre-wrap; word-wrap: break-word; transition: background-color .3s ease, color .3s ease; }
+
+  @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } .field, .field.two { grid-template-columns: 1fr 1fr; } .field .span-2 { grid-column: span 2; } .field .btn { grid-column: 1 / -1; justify-self: stretch; } }
+  @media (max-width: 760px) { .field, .field.two { grid-template-columns: 1fr; } .field .span-2, .field .span-all { grid-column: 1 / -1; } }
+  @media (max-width: 900px) {
+    .tableWrap { overflow: visible; }
+    table, thead, tbody, th, td, tr { display: block; width: 100%; }
+    thead { display: none; }
+    tbody tr { margin-bottom: 12px; border: 1px solid var(--line); border-radius: 10px; padding: 16px; background: var(--mobile-row-bg); position: relative; }
+    tbody td { border: none; padding: 0; display: block; }
+    td.pc-only { display: none; }
+    .mobile-only { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    .mobile-only .id-cell { font-size: 13px; color: var(--txt-dim); }
+    .mobile-only .time-cell { font-size: 11px; color: var(--txt-mute); }
+    .key-cell { font-size: 14px; color: var(--txt); margin-bottom: 4px; }
+    .note-cell { margin-bottom: 16px; }
+    .tags-row { display: flex; gap: 8px; margin-bottom: 14px; }
+    .actions { justify-content: stretch; padding-top: 12px; border-top: 1px dashed var(--line); margin-top: 12px; }
+    .actions .custom-select-wrap { flex: 1; width: auto; }
+    .actions .btn { flex: none; }
+    .revoked-panel tbody tr { margin-bottom: 10px; }
+    .revoked-panel td { opacity: 1; }
+    .revoked-panel td + td { margin-top: 6px; }
+
+    .head { flex-direction: column; align-items: flex-start; gap: 12px; padding: 16px; }
+    .head-right { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
+  }
+  @media (max-width: 640px) {
+    .wrap { padding: 16px 16px 60px; }
+    .card-body { padding: 18px; }
+    .card-head { padding: 14px 18px; }
+    .msg.in-list { margin: 12px 16px 0; }
+    .login-card { margin-top: 24px; }
+  }
+
+  /* 有壁纸时 Banner / 模态框与卡片同样处理 */
+  html.has-bg .head {
+    background: color-mix(in srgb, var(--card-bg-color) calc(var(--card-alpha) * 100%), transparent);
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  }
+  @supports not (background: color-mix(in srgb, red 50%, transparent)) {
+    html.has-bg .head { background: var(--panel); }
+  }
+  html.has-bg .modal {
+    background: color-mix(in srgb, var(--card-bg-color) calc(var(--card-alpha) * 100%), transparent);
+    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+  }
+  html.has-bg .badge-l5 { background-color: transparent; }
+</style>
+
+<script>
+  (function(){
+    try {
+      var t = localStorage.getItem('bg_theme');
+      if (t !== 'light' && t !== 'dark') {
+        var prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+        t = prefersLight ? 'light' : 'dark';
+      }
+      document.documentElement.setAttribute('data-theme', t);
+      if (t === 'light') {
+        var tone = localStorage.getItem('bg_tone');
+        if (tone !== 'cream' && tone !== 'green') tone = 'cream';
+        document.documentElement.setAttribute('data-tone', tone);
+      }
+    } catch(e){
+      document.documentElement.setAttribute('data-theme','dark');
+    }
+  })();
+</script>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="head">
+    <div class="brand">
+      <div class="logo">
+        <svg viewBox="0 0 24 24"><path d="M12 2L3 7v10l9 5 9-5V7l-9-5z"/><path d="M9 12l2 2 4-4"/></svg>
+      </div>
+      <div>
+        <h1>Ephemera <span>· Key Management</span></h1>
+        <p>蜉蝣邮件网关发信密钥管理控制台</p>
+      </div>
+    </div>
+    <div class="head-right">
+      <div class="tone-switcher" id="toneSwitcher" aria-label="亮色色调">
+        <button class="tone-btn" data-tone-val="cream" title="浅米黄"></button>
+        <button class="tone-btn" data-tone-val="green" title="浅绿"></button>
+      </div>
+      <button class="theme-toggle" id="themeToggle" aria-label="切换日间/夜间模式" title="切换日间/夜间模式">
+        <svg class="icon-moon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+      </button>
+      <span class="badge-l5">Eph · ADMIN</span>
+    </div>
+  </header>
+
+  <section class="card login-card" id="loginCard">
+    <div class="card-body" style="padding: 32px 26px;">
+      <div class="login-icon"><svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+      <div class="login-title">管理员验证</div>
+      <div class="login-sub">输入 Admin 权限 Key 以解锁控制台</div>
+      <div class="field">
+        <input type="password" id="adminKey" placeholder="Admin Key" autocomplete="off">
+        <button class="btn primary" id="unlockBtn"><svg viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>解锁</button>
+      </div>
+      <div class="msg err" id="loginMsg"></div>
+    </div>
+  </section>
+
+  <div class="hide" id="dashboardWrap">
+    <section class="card" id="sysInfoCard" style="margin-bottom: 20px;">
+      <div class="card-head">
+        <h2>系统运行状态</h2>
+        <button class="btn ghost sm" id="sysInfoRefreshBtn">刷新</button>
+      </div>
+      <div class="card-body">
+        <div class="sys-grid">
+          <div class="sys-item"><span class="label">系统运行时间</span><span class="val" id="si_uptime">--</span></div>
+          <div class="sys-item"><span class="label">队列 / 已完成</span><span class="val ok" id="si_queue_success">--</span></div>
+          <div class="sys-item"><span class="label">近 1 分钟拒绝</span><span class="val danger" id="si_reject_1m">--</span></div>
+          <div class="sys-item"><span class="label">内存占用</span><span class="val" id="si_mem">--</span></div>
+          <div class="sys-item"><span class="label">模板 / 账户数</span><span class="val" id="si_tmpl_acc">--</span></div>
+        </div>
+      </div>
+    </section>
+
+    <div class="grid">
+      <div class="col">
+        <section class="card" id="mainCard">
+          <div class="card-head">
+            <h2>密钥列表</h2>
+            <div style="display:flex;gap:8px;">
+              <button class="btn ghost sm" id="refreshBtn"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>刷新</button>
+              <button class="btn ghost sm" id="logoutBtn"><svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>锁定</button>
+            </div>
+          </div>
+          <div class="card-body" style="padding: 0;">
+            <div class="msg in-list" id="listMsg"></div>
+            <div class="tableWrap">
+              <table>
+                <thead><tr><th>ID</th><th>密钥与备注</th><th>权限</th><th>状态</th><th>创建时间</th><th style="text-align:right;">操作</th></tr></thead>
+                <tbody id="keyRows"></tbody>
+              </table>
+            </div>
+            <details class="revoked-panel" id="revokedPanel">
+              <summary><span>已吊销密钥</span><span class="revoked-count" id="revokedCount">0</span></summary>
+              <div class="tableWrap">
+                <table>
+                  <thead><tr><th>ID</th><th>密钥与备注</th><th>权限</th><th>创建时间</th></tr></thead>
+                  <tbody id="revokedRows"></tbody>
+                </table>
+              </div>
+            </details>
+          </div>
+        </section>
+
+        <section class="card" id="createCard">
+          <div class="card-head"><h2>创建新密钥</h2></div>
+          <div class="card-body">
+            <div class="field two">
+              <div><label class="form-label" for="note">备注（可选）</label><input type="text" id="note" placeholder="便于识别用途" maxlength="100"></div>
+              <div>
+                <label class="form-label">权限</label>
+                <div class="custom-select-wrap" id="permWrap">
+                  <div class="custom-select-trigger" tabindex="0" role="button" aria-haspopup="listbox"><span id="permText">send · 仅发信</span><svg class="chevron" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></div>
+                  <div class="custom-options" role="listbox"></div>
+                  <select id="permSel" style="display:none;"><option value="send">send · 仅发信</option><option value="admin">admin · 管理 + 发信</option></select>
+                </div>
+              </div>
+              <div class="span-2" style="display:flex;"><button class="btn primary" id="createBtn"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>生成密钥</button></div>
+            </div>
+            <div class="newkey hide" id="newKeyBox">
+              <div class="lbl"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>新密钥（仅显示一次，请立即保存）</div>
+              <code class="val" id="newKeyVal"></code>
+              <div class="actions">
+                <button class="btn ghost sm" id="copyKeyBtn"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制</button>
+                <button class="btn ghost sm" id="closeNewKeyBtn">关闭</button>
+              </div>
+            </div>
+            <div class="msg" id="createMsg"></div>
+          </div>
+        </section>
+      </div>
+
+      <div class="col">
+        <section class="card" id="templateCard">
+          <div class="card-head"><h2>创建全新邮件模板</h2></div>
+          <div class="card-body">
+            <div class="field two" style="margin-bottom:14px;">
+              <div><label class="form-label" for="t_id">模板 ID (仅英数)</label><input type="text" id="t_id" placeholder="例如: v2" autocomplete="off"></div>
+              <div><label class="form-label" for="t_name">显示名称</label><input type="text" id="t_name" placeholder="例如: 营销通知" autocomplete="off"></div>
+            </div>
+            <div class="field one" style="margin-bottom:14px;"><div><label class="form-label" for="t_account">发信账户</label><input type="text" id="t_account" placeholder="例如: default" autocomplete="off" value="default"></div></div>
+            <div class="field one" style="margin-bottom:14px;"><div><label class="form-label" for="t_subject">邮件标题 (Subject)</label><input type="text" id="t_subject" placeholder="例如: 【notice】新功能上线" autocomplete="off"></div></div>
+            <div class="field one" style="margin-bottom:14px;"><div><label class="form-label" for="t_api_fields">API 变量映射 (格式: 参数名:占位符)</label><input type="text" id="t_api_fields" placeholder="例如: code:{code},name:[[NAME]] (留空则无)" autocomplete="off"></div></div>
+            <div class="field one" style="margin-bottom:16px;"><div><label class="form-label" for="t_html">邮件 HTML 源码</label><textarea id="t_html" rows="6" placeholder="&lt;!DOCTYPE html&gt;&lt;html&gt;..."></textarea></div></div>
+            <div style="margin-bottom:16px;">
+              <label class="checkbox-wrap" for="t_is_web"><input type="checkbox" id="t_is_web"><span class="custom-checkbox"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span><span>在 Web 端显示此模板 (让前端渲染输入框)</span></label>
+            </div>
+            <div class="field one hide" id="web_fields_container" style="margin-bottom:24px;"><div><label class="form-label" for="t_web_fields">Web 端变量映射 (格式: 显示名;入参)</label><input type="text" id="t_web_fields" placeholder="例如: 验证码;code,账号;username"></div></div>
+            <button class="btn primary" id="saveTemplateBtn"><svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>创建模板并保存</button>
+            <div class="msg" id="templateMsg"></div>
+          </div>
+        </section>
+
+        <section class="card" id="updateTemplateCard">
+          <div class="card-head"><h2>更新模板信息 (留空不改)</h2></div>
+          <div class="card-body">
+            <div class="field two" style="margin-bottom:14px;">
+              <div><label class="form-label" for="ut_id">目标模板 ID</label><input type="text" id="ut_id" placeholder="例如: v1" autocomplete="off"></div>
+              <div><label class="form-label" for="ut_name">新显示名称 (留空不改)</label><input type="text" id="ut_name" placeholder="例如: 验证码新名称" autocomplete="off"></div>
+            </div>
+            <div class="field one" style="margin-bottom:16px;"><div><label class="form-label" for="ut_web_fields">新 Web 变量映射 (格式: 显示名;入参，留空不改)</label><input type="text" id="ut_web_fields" placeholder="例如: 验证码;code"></div></div>
+            <button class="btn primary" id="updateTemplateBtn"><svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>更新模板配置</button>
+            <div class="msg" id="updateTemplateMsg"></div>
+          </div>
+        </section>
+
+        <section class="card" id="toggleWebCard">
+          <div class="card-head"><h2>禁用/启用 Web 发信功能</h2></div>
+          <div class="card-body">
+            <div class="field two" style="margin-bottom:16px;">
+              <div><label class="form-label" for="tg_id">目标模板 ID</label><input type="text" id="tg_id" placeholder="例如: v1" autocomplete="off"></div>
+              <div>
+                <label class="form-label">操作</label>
+                <div class="custom-select-wrap" id="tgWrap">
+                  <div class="custom-select-trigger" tabindex="0" role="button" aria-haspopup="listbox"><span id="tgText">禁用 Web 显示</span><svg class="chevron" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></div>
+                  <div class="custom-options" role="listbox"></div>
+                  <select id="tg_action" style="display:none;"><option value="disable">禁用 Web 显示 (仅保留 API)</option><option value="enable">启用 Web 显示</option></select>
+                </div>
+              </div>
+            </div>
+            <button class="btn primary" id="toggleWebBtn">执行操作</button>
+            <div class="msg" id="toggleWebMsg"></div>
+          </div>
+        </section>
+
+        <section class="card" id="templateListCard">
+          <div class="card-head"><h2>全量模板列表</h2><button class="btn ghost sm" id="templateListRefreshBtn">刷新</button></div>
+          <div class="card-body" style="padding: 0;">
+            <div class="msg in-list" id="templateListMsg"></div>
+            <div class="tableWrap">
+              <table style="min-width: auto;"><thead><tr><th>ID / 名称</th><th>Web 状态</th></tr></thead><tbody id="templateRows"></tbody></table>
+            </div>
+          </div>
+        </section>
+
+        <section class="card" id="logCard">
+          <div class="card-head">
+            <h2>运行日志</h2>
+            <div style="display:flex; gap:8px;">
+              <div class="custom-select-wrap" id="logLineWrap" style="width: 130px;">
+                <div class="custom-select-trigger" tabindex="0" style="padding: 5px 10px; min-height: 30px; font-size: 12px;"><span>最近 50 条</span><svg class="chevron" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></div>
+                <div class="custom-options"></div>
+                <select id="logLines" style="display:none;"><option value="50">最近 50 条</option><option value="100">最近 100 条</option><option value="200">最近 200 条</option></select>
+              </div>
+              <button class="btn primary sm" id="logRefreshBtn">拉取</button>
+            </div>
+          </div>
+          <div class="card-body" style="padding: 0;"><pre id="logContent" class="log-box">点击拉取加载日志...</pre></div>
+        </section>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-mask" id="confirmMask" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+  <div class="modal">
+    <div class="modal-icon"><svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg></div>
+    <div class="modal-title" id="confirmTitle">确认吊销密钥</div>
+    <div class="modal-desc" id="confirmDesc"></div>
+    <div class="modal-actions"><button class="btn ghost" id="confirmCancel">取消</button><button class="btn danger" id="confirmOk">确认吊销</button></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ==================== 主题 & 色调 ====================
+  const THEME_KEY = 'bg_theme';
+  const TONE_KEY  = 'bg_tone';
+
+  function currentTheme() {
+    return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+  }
+  function currentTone() {
+    const t = document.documentElement.getAttribute('data-tone');
+    return (t === 'green' || t === 'cream') ? t : 'cream';
+  }
+
+  function applyTheme(theme, tone) {
+    document.documentElement.setAttribute('data-theme', theme);
+    if (theme === 'light') {
+      const t = (tone === 'green' || tone === 'cream') ? tone : currentTone();
+      document.documentElement.setAttribute('data-tone', t);
+      try { localStorage.setItem(TONE_KEY, t); } catch(e){}
+    } else {
+      document.documentElement.removeAttribute('data-tone');
+    }
+    try { localStorage.setItem(THEME_KEY, theme); } catch(e){}
+    syncToneButtons();
+  }
+
+  function syncToneButtons() {
+    const active = currentTone();
+    document.querySelectorAll('.tone-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.toneVal === active);
+    });
+  }
+
+  function initThemeControls() {
+    const themeBtn = document.getElementById('themeToggle');
+    if (themeBtn) {
+      themeBtn.addEventListener('click', () => {
+        applyTheme(currentTheme() === 'light' ? 'dark' : 'light');
+      });
+    }
+
+    const toneBox = document.getElementById('toneSwitcher');
+    if (toneBox) {
+      toneBox.addEventListener('click', (e) => {
+        const btn = e.target.closest('.tone-btn');
+        if (!btn) return;
+        if (currentTheme() !== 'light') return;
+        applyTheme('light', btn.dataset.toneVal);
+      });
+    }
+    syncToneButtons();
+  }
+
+  (function() {
+    try {
+      const saved = localStorage.getItem(THEME_KEY);
+      if (!saved && window.matchMedia) {
+        const mq = window.matchMedia('(prefers-color-scheme: light)');
+        const handler = e => {
+          if (!localStorage.getItem(THEME_KEY)) {
+            document.documentElement.setAttribute('data-theme', e.matches ? 'light' : 'dark');
+            if (e.matches) {
+              const t = localStorage.getItem(TONE_KEY) || 'cream';
+              document.documentElement.setAttribute('data-tone', t);
+            } else {
+              document.documentElement.removeAttribute('data-tone');
+            }
+            syncToneButtons();
+          }
+        };
+        if (mq.addEventListener) mq.addEventListener('change', handler);
+        else if (mq.addListener) mq.addListener(handler);
+      }
+    } catch(e){}
+  })();
+  // =================================================
+
+  // ==================== 壁纸层处理 ====================
+  if ("{{ENABLE_BG}}" === "true") {
+    const BG_URL = "/assets/background.jpg";
+    const probe = new Image();
+    probe.onload = () => {
+      const st = document.createElement('style');
+      st.id = 'bgStyle';
+      st.textContent = 'body::before{background-image:url("' + BG_URL.replace(/"/g, '\\"') + '");}';
+      document.head.appendChild(st);
+      document.documentElement.classList.add('has-bg');
+    };
+    probe.src = BG_URL;
+  }
+  // ================================================================
+
+  let AK = "";
+  let busy = false;
+  let sysInfoTimer = null;
+  let sysInfoInFlight = false;
+
+  const $ = id => document.getElementById(id);
+
+  const ICON_OK  = '<svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>';
+  const ICON_ERR = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>';
+
+  function escapeHTML(v) {
+    if (v === null || v === undefined) return "";
+    return String(v).replace(/[&<>'"]/g, t => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"
+    }[t] || t));
+  }
+
+  function showMsg(el, text, ok) {
+    if (!el) return;
+    el.innerHTML = (ok ? ICON_OK : ICON_ERR) + "<span>" + escapeHTML(text) + "</span>";
+    el.classList.remove("ok", "err");
+    el.classList.add("show", ok ? "ok" : "err");
+  }
+  function hideMsg(el) {
+    if (!el) return;
+    el.classList.remove("show", "ok", "err");
+    el.innerHTML = "";
+  }
+
+  function syncSelectOptions(wrap) {
+    if (!wrap) return;
+    const nativeSel = wrap.querySelector('select');
+    const optsBox = wrap.querySelector('.custom-options');
+    const textEl = wrap.querySelector('.custom-select-trigger span');
+    if (!nativeSel || !optsBox) return;
+
+    optsBox.innerHTML = Array.from(nativeSel.options).map(o =>
+      '<div class="custom-option' + (o.selected ? ' selected' : '') + '" data-val="' + escapeHTML(o.value) + '">' +
+      escapeHTML(o.textContent) + '</div>'
+    ).join('');
+
+    const cur = nativeSel.options[nativeSel.selectedIndex];
+    if (cur && textEl) textEl.textContent = cur.textContent;
+  }
+
+  function closeAllSelects() {
+    document.querySelectorAll('.custom-select-wrap.open').forEach(el => {
+      el.classList.remove('open');
+      const card = el.closest('.card');
+      if (card) card.classList.remove('z-index-super');
+    });
+  }
+
+  function initSelects() {
+    document.body.addEventListener('click', function (e) {
+      const trigger = e.target.closest('.custom-select-trigger');
+      if (trigger) {
+        e.stopPropagation();
+        const wrap = trigger.parentElement;
+        const isOpen = wrap.classList.contains('open');
+        closeAllSelects();
+        if (!isOpen) {
+          wrap.classList.add('open');
+          const card = wrap.closest('.card');
+          if (card) card.classList.add('z-index-super');
+        }
+        return;
+      }
+
+      const option = e.target.closest('.custom-option');
+      if (option) {
+        e.stopPropagation();
+        const wrap = option.closest('.custom-select-wrap');
+        const textEl = wrap.querySelector('.custom-select-trigger span');
+        const nativeSel = wrap.querySelector('select');
+
+        if (textEl) textEl.textContent = option.textContent;
+        if (nativeSel) nativeSel.value = option.dataset.val;
+
+        wrap.querySelectorAll('.custom-option').forEach(opt => opt.classList.remove('selected'));
+        option.classList.add('selected');
+
+        closeAllSelects();
+
+        if (wrap.id.indexOf('pWrap_') === 0) {
+          const id = Number(wrap.id.split('_')[1]);
+          changePerm(id, option.dataset.val);
+        }
+        return;
+      }
+
+      closeAllSelects();
+    });
+
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') closeAllSelects();
+    });
+  }
+
+  let confirmResolver = null;
+  let confirmLastFocus = null;
+
+  function openConfirm(opts) {
+    const mask = $("confirmMask");
+    const titleEl = $("confirmTitle");
+    const descEl = $("confirmDesc");
+    const okBtn = $("confirmOk");
+
+    titleEl.textContent = opts.title || "确认操作";
+    descEl.innerHTML = opts.desc || "";
+    okBtn.textContent = opts.okText || "确认";
+
+    confirmLastFocus = document.activeElement;
+    mask.classList.add("show");
+    requestAnimationFrame(() => okBtn.focus());
+
+    return new Promise(resolve => { confirmResolver = resolve; });
+  }
+
+  function closeConfirm(result) {
+    const mask = $("confirmMask");
+    mask.classList.remove("show");
+    if (confirmResolver) {
+      confirmResolver(result);
+      confirmResolver = null;
+    }
+    if (confirmLastFocus && confirmLastFocus.focus) {
+      confirmLastFocus.focus();
+      confirmLastFocus = null;
+    }
+  }
+
+  function initConfirm() {
+    const mask = $("confirmMask");
+    $("confirmOk").addEventListener("click", () => closeConfirm(true));
+    $("confirmCancel").addEventListener("click", () => closeConfirm(false));
+    mask.addEventListener("click", e => { if (e.target === mask) closeConfirm(false); });
+    document.addEventListener("keydown", e => {
+      if (e.key === "Escape" && mask.classList.contains("show")) { e.preventDefault(); closeConfirm(false); }
+    });
+    mask.addEventListener("keydown", e => {
+      if (e.key !== "Tab") return;
+      const focusables = mask.querySelectorAll("button, [tabindex]:not([tabindex='-1'])");
+      if (!focusables.length) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    });
+  }
+
+  function api(path, params) {
+    const url = new URL(path, window.location.origin);
+    if (params) Object.keys(params).forEach(k => url.searchParams.append(k, params[k]));
+    return fetch(url.toString(), { method: "GET", headers: { "X-Admin-Key": AK }, cache: "no-store", credentials: "omit" })
+      .then(async r => { const txt = await r.text(); let d; try { d = JSON.parse(txt); } catch { throw new Error("非 JSON"); } return d; });
+  }
+
+  function apiPost(path, params) {
+    const body = new URLSearchParams();
+    if (params) Object.keys(params).forEach(k => body.append(k, params[k]));
+    return fetch(path, { method: "POST", headers: { "X-Admin-Key": AK, "Content-Type": "application/x-www-form-urlencoded" }, body: body.toString(), cache: "no-store", credentials: "omit" })
+      .then(async r => { const txt = await r.text(); let d; try { d = JSON.parse(txt); } catch { throw new Error("非 JSON"); } return d; });
+  }
+
+  function setBusy(state, btn) {
+    busy = state;
+    if (btn) btn.disabled = state;
+    document.body.style.cursor = state ? "wait" : "";
+  }
+
+  async function loadSysInfo() {
+    if (!AK || sysInfoInFlight) return;
+    sysInfoInFlight = true;
+    try {
+      const res = await fetch("/api/admin/system_info", {
+        headers: { "X-Admin-Key": AK },
+        cache: "no-store",
+        credentials: "omit"
+      });
+      let d = null;
+      try { d = await res.json(); } catch { d = null; }
+
+      if (d && d.ok) {
+        $("si_uptime").textContent = (d.uptime != null && d.uptime !== "") ? String(d.uptime) : "--";
+
+        let q = d.running_tasks != null ? String(d.running_tasks) : "0";
+        let s = d.total_success != null ? String(d.total_success) : "0";
+        $("si_queue_success").textContent = `${q} / ${s}`;
+
+        let rejectText = d.reject_1m != null ? String(d.reject_1m) : "--";
+        $("si_reject_1m").textContent = rejectText;
+
+        const mu = Number(d.mem_used_mb), mt = Number(d.mem_total_mb);
+        $("si_mem").textContent = (Number.isFinite(mu) && Number.isFinite(mt))
+          ? mu + " / " + mt + " MB" : "--";
+
+        const tc = Number(d.template_count), ac = Number(d.account_count);
+        $("si_tmpl_acc").textContent = (Number.isFinite(tc) && Number.isFinite(ac))
+          ? tc + " / " + ac : "--";
+      } else {
+        ["si_uptime","si_queue_success","si_reject_1m","si_mem","si_tmpl_acc"].forEach(id => {
+          if ($(id)) $(id).textContent = "--";
+        });
+      }
+    } catch (e) {
+      console.warn("[sysinfo]", e);
+    } finally {
+      sysInfoInFlight = false;
+    }
+  }
+
+  async function loadTemplateList() {
+    if (!AK) return;
+    const listMsg = $("templateListMsg");
+    try {
+      const res = await fetch("/api/admin/list_templates", {
+        headers: { "X-Admin-Key": AK },
+        cache: "no-store",
+        credentials: "omit"
+      });
+      let d = null;
+      try { d = await res.json(); } catch { d = null; }
+
+      const rows = $("templateRows");
+
+      if (d && d.ok) {
+        const list = Array.isArray(d.templates) ? d.templates : [];
+        if (list.length === 0) {
+          rows.innerHTML = '<tr><td colspan="2" style="text-align:center;padding:20px;" class="muted">暂无模板</td></tr>';
+        } else {
+          rows.innerHTML = list.map(t => {
+            const tid = escapeHTML(t && t.id != null ? t.id : "");
+            const tname = escapeHTML(t && t.name != null ? t.name : "");
+            const isWeb = !!(t && t.is_web);
+            return `
+              <tr>
+                <td>
+                  <div style="font-size:12px;font-weight:600;color:var(--txt);">${tid || "—"}</div>
+                  <div style="font-size:11px;color:var(--txt-mute);">${tname || "—"}</div>
+                </td>
+                <td>
+                  <span class="tag ${isWeb ? "active" : "revoked"}">
+                    ${isWeb ? "WEB 可见" : "API 专用"}
+                  </span>
+                </td>
+              </tr>`;
+          }).join("");
+        }
+        hideMsg(listMsg);
+      } else {
+        rows.innerHTML = '<tr><td colspan="2" style="text-align:center;padding:20px;" class="muted">加载失败</td></tr>';
+        showMsg(listMsg, "模板列表加载失败：" + ((d && d.error) || "unknown"), false);
+      }
+    } catch (e) {
+      $("templateRows").innerHTML = '<tr><td colspan="2" style="text-align:center;padding:20px;" class="muted">请求失败</td></tr>';
+      showMsg(listMsg, "模板列表请求失败：" + e.message, false);
+    }
+  }
+
+  async function loadLogs() {
+    if (!AK) return;
+    const lines = Number($("logLines").value) || 50;
+    const box = $("logContent");
+    box.textContent = "拉取中...";
+    try {
+      const res = await fetch("/api/admin/logs?lines=" + encodeURIComponent(lines), {
+        headers: { "X-Admin-Key": AK },
+        cache: "no-store",
+        credentials: "omit"
+      });
+      let d = null;
+      try { d = await res.json(); } catch { d = null; }
+
+      if (d && d.ok) {
+        box.textContent = (d.logs != null && String(d.logs) !== "") ? String(d.logs) : "暂无日志";
+        requestAnimationFrame(() => { box.scrollTop = box.scrollHeight; });
+      } else {
+        box.textContent = "获取失败：" + ((d && d.error) || "unknown");
+      }
+    } catch (e) {
+      box.textContent = "请求失败：" + e.message;
+    }
+  }
+
+  async function unlock() {
+    if (busy) return;
+    const key = $("adminKey").value.trim();
+    hideMsg($("loginMsg"));
+    if (!key) { showMsg($("loginMsg"), "请输入 Key", false); return; }
+
+    AK = key;
+    setBusy(true, $("unlockBtn"));
+    try {
+      const d = await api("/api/keys");
+      if (d && d.ok) {
+        $("loginCard").classList.add("hide");
+        $("dashboardWrap").classList.remove("hide");
+        $("adminKey").value = "";
+        renderKeys(d.keys || []);
+        hideMsg($("listMsg"));
+
+        loadSysInfo();
+        loadTemplateList();
+        loadLogs();
+
+        if (sysInfoTimer) { clearInterval(sysInfoTimer); sysInfoTimer = null; }
+
+        sysInfoTimer = setInterval(() => {
+          if (AK && !$("dashboardWrap").classList.contains("hide") && document.visibilityState === "visible") {
+            loadSysInfo();
+          }
+        }, 1000);
+
+      } else {
+        AK = "";
+        showMsg($("loginMsg"), "验证失败：" + ((d && d.error) || "unknown"), false);
+      }
+    } catch (e) {
+      AK = "";
+      showMsg($("loginMsg"), "连接失败：" + e.message, false);
+    } finally {
+      setBusy(false, $("unlockBtn"));
+    }
+  }
+
+  function logout() {
+    AK = "";
+    $("keyRows").innerHTML = "";
+    $("revokedRows").innerHTML = "";
+    $("revokedCount").textContent = "0";
+    $("revokedPanel").open = false;
+
+    $("dashboardWrap").classList.add("hide");
+    $("loginCard").classList.remove("hide");
+    $("newKeyBox").classList.add("hide");
+    $("newKeyVal").textContent = "";
+
+    if (sysInfoTimer) { clearInterval(sysInfoTimer); sysInfoTimer = null; }
+
+    ["si_uptime","si_queue_success","si_reject_1m","si_mem","si_tmpl_acc"].forEach(id => {
+      const el = $(id); if (el) el.textContent = "--";
+    });
+    const tr = $("templateRows"); if (tr) tr.innerHTML = "";
+    const logBox = $("logContent"); if (logBox) logBox.textContent = "点击拉取加载日志...";
+    const logSel = $("logLines"); if (logSel) logSel.value = "50";
+    syncSelectOptions($("logLineWrap"));
+
+    hideMsg($("loginMsg"));
+    hideMsg($("listMsg"));
+    hideMsg($("createMsg"));
+    hideMsg($("templateMsg"));
+    hideMsg($("updateTemplateMsg"));
+    hideMsg($("toggleWebMsg"));
+    hideMsg($("templateListMsg"));
+
+    $("adminKey").focus();
+  }
+
+  function renderKeys(keys) {
+    const list = Array.isArray(keys) ? keys : [];
+    const activeList  = list.filter(k => k && k.status === "active");
+    const revokedList = list.filter(k => k && k.status !== "active");
+
+    const rows = $("keyRows");
+    if (activeList.length === 0) {
+      rows.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:36px;" class="muted">暂无活跃密钥 · 请在上方创建</td></tr>';
+    } else {
+      rows.innerHTML = activeList.map(k => {
+        const safeId = Number.isFinite(Number(k.id)) ? Number(k.id) : 0;
+        const keyStr = k.key ? String(k.key) : "";
+        const keyDisplay = keyStr.length > 14 ? keyStr.slice(0, 6) + "····" + keyStr.slice(-4) : keyStr;
+        const isAdmin = k.perm === "admin";
+        return `
+          <tr>
+            <td class="id-cell pc-only">#${safeId}</td>
+            <td>
+              <div class="mobile-only">
+                 <span class="id-cell">#${safeId}</span>
+                 <span class="time-cell">${escapeHTML(k.created)}</span>
+              </div>
+              <div class="key-cell" title="${escapeHTML(keyStr)}">${escapeHTML(keyDisplay)}</div>
+              <div class="note-cell">${k.note ? escapeHTML(k.note) : '<span class="muted">—</span>'}</div>
+            </td>
+            <td><div class="tags-row"><span class="tag ${isAdmin ? "admin" : "send"}">${isAdmin ? "ADMIN" : "SEND"}</span></div></td>
+            <td><div class="tags-row"><span class="tag active">ACTIVE</span></div></td>
+            <td class="time-cell pc-only">${escapeHTML(k.created)}</td>
+            <td>
+              <div class="actions">
+                <div class="custom-select-wrap" id="pWrap_${safeId}">
+                  <div class="custom-select-trigger" tabindex="0" role="button">
+                    <span>${isAdmin ? 'admin' : 'send'}</span>
+                    <svg class="chevron" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+                  </div>
+                  <div class="custom-options">
+                    <div class="custom-option ${!isAdmin ? 'selected' : ''}" data-val="send">send</div>
+                    <div class="custom-option ${isAdmin ? 'selected' : ''}" data-val="admin">admin</div>
+                  </div>
+                  <select style="display:none;">
+                    <option value="send" ${!isAdmin ? "selected" : ""}>send</option>
+                    <option value="admin" ${isAdmin ? "selected" : ""}>admin</option>
+                  </select>
+                </div>
+                <button class="btn danger sm" data-act="revoke" data-id="${safeId}">吊销</button>
+              </div>
+            </td>
+          </tr>`;
+      }).join("");
+    }
+
+    const revokedRows = $("revokedRows");
+    $("revokedCount").textContent = String(revokedList.length);
+
+    if (revokedList.length === 0) {
+      revokedRows.innerHTML = '<tr><td colspan="4" style="text-align:center;padding:24px;" class="muted">暂无已吊销密钥</td></tr>';
+    } else {
+      revokedRows.innerHTML = revokedList.map(k => {
+        const safeId = Number.isFinite(Number(k.id)) ? Number(k.id) : 0;
+        const keyStr = k.key ? String(k.key) : "";
+        const keyDisplay = keyStr.length > 14 ? keyStr.slice(0, 6) + "····" + keyStr.slice(-4) : keyStr;
+        const isAdmin = k.perm === "admin";
+        return `
+          <tr data-key-id="${safeId}">
+            <td class="id-cell">#${safeId}</td>
+            <td>
+              <div class="key-cell" title="${escapeHTML(keyStr)}">${escapeHTML(keyDisplay)}</div>
+              <div class="note-cell">${k.note ? escapeHTML(k.note) : '<span class="muted">—</span>'}</div>
+            </td>
+            <td><span class="tag ${isAdmin ? "admin" : "send"}">${isAdmin ? "ADMIN" : "SEND"}</span></td>
+            <td class="time-cell">${escapeHTML(k.created)}</td>
+          </tr>`;
+      }).join("");
+    }
+  }
+
+  $("keyRows").addEventListener("click", e => {
+    const btn = e.target.closest('[data-act="revoke"]');
+    if (!btn) return;
+    revokeKey(Number(btn.dataset.id));
+  });
+
+  async function refresh() {
+    if (!AK || busy) return;
+    try {
+      const d = await api("/api/keys");
+      if (d && d.ok) {
+        renderKeys(d.keys || []);
+        hideMsg($("listMsg"));
+      } else {
+        showMsg($("listMsg"), "加载失败：" + ((d && d.error) || "unknown"), false);
+      }
+    } catch (e) {
+      showMsg($("listMsg"), "加载失败：" + e.message, false);
+    }
+  }
+
+  async function createKey() {
+    if (busy) return;
+    hideMsg($("createMsg"));
+    const note = $("note").value.trim();
+    const perm = $("permSel").value;
+
+    setBusy(true, $("createBtn"));
+    try {
+      const d = await api("/api/keys/create", { note, perm });
+      if (d && d.ok) {
+        $("newKeyBox").classList.remove("hide");
+        $("newKeyVal").textContent = d.key || "";
+        $("note").value = "";
+        await refresh();
+      } else {
+        showMsg($("createMsg"), "创建失败：" + ((d && d.error) || "unknown"), false);
+      }
+    } catch (e) {
+      showMsg($("createMsg"), "创建失败：" + e.message, false);
+    } finally {
+      setBusy(false, $("createBtn"));
+    }
+  }
+
+  async function revokeKey(id) {
+    if (!Number.isFinite(id) || busy) return;
+
+    const ok = await openConfirm({
+      title: "确认吊销密钥",
+      desc: "即将吊销密钥 <code>#" + id + "</code>。<br>吊销后立即失效，且无法恢复。",
+      okText: "确认吊销"
+    });
+    if (!ok) return;
+
+    try {
+      const d = await api("/api/keys/revoke", { id });
+      if (d && d.ok) {
+        await refresh();
+
+        const panel = $("revokedPanel");
+        panel.open = true;
+
+        requestAnimationFrame(() => {
+          const row = panel.querySelector('tr[data-key-id="' + id + '"]');
+          if (!row) return;
+          row.scrollIntoView({ block: "nearest", behavior: "smooth" });
+          row.classList.add("flash");
+          row.addEventListener("animationend", () => row.classList.remove("flash"), { once: true });
+        });
+      } else {
+        showMsg($("listMsg"), "吊销失败：" + ((d && d.error) || "unknown"), false);
+      }
+    } catch (e) {
+      showMsg($("listMsg"), "吊销失败：" + e.message, false);
+    }
+  }
+
+  async function changePerm(id, perm) {
+    if (!Number.isFinite(id) || busy) return;
+    try {
+      const d = await api("/api/keys/perm", { id, perm });
+      if (d && d.ok) {
+        await refresh();
+      } else {
+        showMsg($("listMsg"), "变更失败：" + ((d && d.error) || "unknown"), false);
+        await refresh();
+      }
+    } catch (e) {
+      showMsg($("listMsg"), "变更失败：" + e.message, false);
+      await refresh();
+    }
+  }
+
+  async function copyNewKey() {
+    const val = $("newKeyVal").textContent;
+    if (!val) return;
+    const btn = $("copyKeyBtn");
+    try {
+      await navigator.clipboard.writeText(val);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = val; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); } catch {}
+      document.body.removeChild(ta);
+    }
+    const old = btn.innerHTML;
+    btn.textContent = "已复制 ✓";
+    setTimeout(() => { btn.innerHTML = old; }, 1400);
+  }
+
+  $("t_is_web").addEventListener("change", (e) => {
+    $("web_fields_container").classList.toggle("hide", !e.target.checked);
+  });
+
+  $("saveTemplateBtn").addEventListener("click", async () => {
+    if (busy) return;
+    hideMsg($("templateMsg"));
+
+    const id = $("t_id").value.trim();
+    const name = $("t_name").value.trim();
+    const account = $("t_account").value.trim();
+    const subject = $("t_subject").value.trim();
+    const apiFields = $("t_api_fields").value.trim();
+    const htmlRaw = $("t_html").value;
+    const isWeb = $("t_is_web").checked;
+    const webFields = $("t_web_fields").value.trim();
+
+    if (!id) { showMsg($("templateMsg"), "模板 ID 不能为空", false); return; }
+    if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
+      showMsg($("templateMsg"), "模板 ID 只能包含字母、数字、下划线和短横线", false); return;
+    }
+    if (!htmlRaw.trim()) { showMsg($("templateMsg"), "HTML 源码不能为空", false); return; }
+    if (htmlRaw.length > 500000) {
+      showMsg($("templateMsg"), "HTML 源码过大（超过 500KB）", false); return;
+    }
+
+    setBusy(true, $("saveTemplateBtn"));
+    try {
+      const d = await apiPost("/api/admin/create_template", {
+        id, name, account, subject,
+        api_fields: apiFields,
+        html: htmlRaw,
+        is_web: isWeb,
+        web_fields: webFields
+      });
+
+      if (d && d.ok) {
+        showMsg($("templateMsg"), "模板「" + id + "」创建成功，物理文件已生成。", true);
+        $("t_name").value = "";
+        $("t_subject").value = "";
+        $("t_api_fields").value = "";
+        $("t_html").value = "";
+        $("t_is_web").checked = false;
+        $("t_web_fields").value = "";
+        $("web_fields_container").classList.add("hide");
+        loadTemplateList();
+      } else {
+        showMsg($("templateMsg"), "创建失败：" + ((d && d.error) || "unknown"), false);
+      }
+    } catch (e) {
+      showMsg($("templateMsg"), "请求失败：" + e.message, false);
+    } finally {
+      setBusy(false, $("saveTemplateBtn"));
+    }
+  });
+
+  $("updateTemplateBtn").addEventListener("click", async () => {
+    if (busy) return;
+    hideMsg($("updateTemplateMsg"));
+
+    const id = $("ut_id").value.trim();
+    const name = $("ut_name").value.trim();
+    const webFields = $("ut_web_fields").value.trim();
+
+    if (!id) { showMsg($("updateTemplateMsg"), "目标模板 ID 不能为空", false); return; }
+    if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
+      showMsg($("updateTemplateMsg"), "ID 只能包含字母、数字、下划线和短横线", false); return;
+    }
+    if (!name && !webFields) {
+      showMsg($("updateTemplateMsg"), "没有填写任何要更新的内容", false); return;
+    }
+
+    setBusy(true, $("updateTemplateBtn"));
+    try {
+      const payload = { id };
+      if (name) payload.name = name;
+      if (webFields) payload.web_fields = webFields;
+
+      const d = await apiPost("/api/admin/update_template", payload);
+
+      if (d && d.ok) {
+        showMsg($("updateTemplateMsg"), "模板「" + id + "」更新成功！", true);
+        $("ut_id").value = "";
+        $("ut_name").value = "";
+        $("ut_web_fields").value = "";
+        loadTemplateList();
+      } else {
+        showMsg($("updateTemplateMsg"), "更新失败：" + ((d && d.error) || "unknown"), false);
+      }
+    } catch (e) {
+      showMsg($("updateTemplateMsg"), "请求失败：" + e.message, false);
+    } finally {
+      setBusy(false, $("updateTemplateBtn"));
+    }
+  });
+
+  $("toggleWebBtn").addEventListener("click", async () => {
+    if (busy) return;
+    hideMsg($("toggleWebMsg"));
+
+    const id = $("tg_id").value.trim();
+    const action = $("tg_action").value;
+
+    if (!id) { showMsg($("toggleWebMsg"), "目标模板 ID 不能为空", false); return; }
+    if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
+      showMsg($("toggleWebMsg"), "ID 只能包含字母、数字、下划线和短横线", false); return;
+    }
+
+    setBusy(true, $("toggleWebBtn"));
+    try {
+      const d = await apiPost("/api/admin/toggle_template_web", { id, action });
+
+      if (d && d.ok) {
+        showMsg($("toggleWebMsg"), "操作成功！", true);
+        $("tg_id").value = "";
+        loadTemplateList();
+      } else {
+        showMsg($("toggleWebMsg"), "操作失败：" + ((d && d.error) || "unknown"), false);
+      }
+    } catch (e) {
+      showMsg($("toggleWebMsg"), "请求失败：" + e.message, false);
+    } finally {
+      setBusy(false, $("toggleWebBtn"));
+    }
+  });
+
+  $("unlockBtn").addEventListener("click", unlock);
+  $("adminKey").addEventListener("keydown", e => { if (e.key === "Enter") unlock(); });
+  $("refreshBtn").addEventListener("click", refresh);
+  $("logoutBtn").addEventListener("click", logout);
+  $("createBtn").addEventListener("click", createKey);
+  $("copyKeyBtn").addEventListener("click", copyNewKey);
+  $("closeNewKeyBtn").addEventListener("click", () => {
+    $("newKeyBox").classList.add("hide");
+    $("newKeyVal").textContent = "";
+  });
+
+  $("sysInfoRefreshBtn").addEventListener("click", loadSysInfo);
+  $("templateListRefreshBtn").addEventListener("click", loadTemplateList);
+  $("logRefreshBtn").addEventListener("click", loadLogs);
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && AK && !$("dashboardWrap").classList.contains("hide")) {
+      loadSysInfo();
+    }
+  });
+
+  initThemeControls();
+  initSelects();
+  initConfirm();
+  syncSelectOptions($("permWrap"));
+  syncSelectOptions($("tgWrap"));
+  syncSelectOptions($("logLineWrap"));
+
+  $("adminKey").focus();
+})();
+</script>
+</body>
+</html>
