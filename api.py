@@ -782,9 +782,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     self._resp(401, {"ok": False, "error": "admin unauthorized"})
                     return
                 data = load_keys()
-                self._resp(200, {"ok": True, "keys": data["keys"]})
-                return
+                safe_keys = []
+                for k in data["keys"]:
+                    k_copy = copy.deepcopy(k)
+                    raw_key = k_copy.get("key", "")
+                    if len(raw_key) > 10:
+                        k_copy["key"] = f"{raw_key[:6]}····{raw_key[-4:]}"
+                    elif raw_key:
+                        k_copy["key"] = "···"
+                    else:
+                        k_copy["key"] = "—"
+                    safe_keys.append(k_copy)
 
+                self._resp(200, {"ok": True, "keys": safe_keys})
+                return
+                
             if path == "/api/keys/create":
                 if not is_admin(admin_key):
                     self._resp(401, {"ok": False, "error": "admin unauthorized"})
