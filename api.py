@@ -146,7 +146,7 @@ def init_wizard():
             "rate_limit_ip_per_min": 10,
             "rate_limit_key_per_min": 30,
             "max_concurrent_sends": 5,
-            "enable_custom_background": False,
+            "enable_custom_background": true,
             "accounts": {
                 "default": {
                     "smtp_host": smtp_host,
