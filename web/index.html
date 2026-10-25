@@ -581,7 +581,7 @@
 (function () {
   "use strict";
 
-  /* ==================== 主题 & 色调（复用 admin 逻辑） ==================== */
+  /* ==================== 主题 & 色调 ==================== */
   const THEME_KEY = 'bg_theme';
   const TONE_KEY  = 'bg_tone';
 
@@ -652,7 +652,7 @@
   })();
   /* ================================================= */
 
-  /* ==================== 壁纸层（复用 admin 机制） ==================== */
+  /* ==================== 壁纸层 ==================== */
   if ("{{ENABLE_BG}}" === "true") {
     const BG_URL = "/assets/background.jpg";
     const probe = new Image();
@@ -709,7 +709,12 @@
 
   async function loadTemplates() {
     try {
-      const res = await fetch('/api/templates', { cache: 'no-store' });
+      const res = await fetch('/api/templates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+        cache: 'no-store'
+      });
       const data = await res.json();
       if (data && data.ok && Array.isArray(data.templates) && data.templates.length > 0) {
         templatesData = data.templates;
@@ -863,17 +868,20 @@
     if (!looksLikeEmail(to)) { showMsg("warn", "邮箱格式不正确"); $("to").focus(); return; }
     if (!templateId) { showMsg("warn", "请选择邮件模板"); return; }
 
-    const params = new URLSearchParams();
-    params.append("KEY", key);
-    params.append("TO", to);
-    params.append("template", templateId);
+    const payload = {
+      KEY: key,
+      TO: to,
+      template: templateId
+    };
 
     if (tmpl && Array.isArray(tmpl.fields)) {
       for (const f of tmpl.fields) {
         const key2 = String(f.key || '');
         if (!/^[a-zA-Z0-9_-]+$/.test(key2)) continue;
         const input = document.getElementById('param_' + key2);
-        if (input && input.value.trim()) params.append(key2, input.value.trim());
+        if (input && input.value.trim()) {
+          payload[key2] = input.value.trim();
+        }
       }
     }
 
@@ -881,8 +889,8 @@
     try {
       const res = await fetch("/api/web_send", {
         method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: params.toString(),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
         credentials: "omit",
         cache: "no-store"
       });
