@@ -1054,8 +1054,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     self._resp(401, {"ok": False, "error": "admin unauthorized"})
                     return
                 
-                limit = int(p.get("lines", 50))
-                if limit > 500: limit = 500
+            lines_str = p.get("lines", "50")
+                if not lines_str.isdigit():
+                    self._resp(400, {"ok": False, "error": "lines must be a positive integer"})
+                    return
+
+            limit = int(lines_str)
+              if limit < 1 or limit > 500:
+                  self._resp(400, {"ok": False, "error": "lines limit must be between 1 and 500"})
+                  return
                 
                 log_path = os.path.join(BASE_DIR, "api.log")
                 if not os.path.exists(log_path):
