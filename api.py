@@ -268,8 +268,7 @@ ensure_configs()
 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
     CFG = json.load(f)
 
-# ======== 你们不要再打了啦，住手 =============
-
+# ======== 防白痴路径校验 =============
 admin_path = CFG.get("admin_path", "/my_secret_admin")
 if not admin_path.startswith("/"):
     admin_path = "/" + admin_path
@@ -443,7 +442,6 @@ def init_admin_key():
         })
         save_keys(data)
         
-        admin_path = CFG.get("admin_path", "/my_secret_admin")
         port = CFG.get("https_port") if CFG.get("enable_web_https", False) else CFG.get("listen_port")
         protocol = "https" if CFG.get("enable_web_https", False) else "http"
 
@@ -558,20 +556,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _params(self, parsed):
         d = {}
+        # 1. 从 URL 提取参数
         for k, v in urllib.parse.parse_qs(parsed.query, keep_blank_values=True).items():
             d[k] = v[0]
             
+        # ==================== 防请求走私 (HTTP Smuggling) ====================
         if self.headers.get("Transfer-Encoding") and self.headers.get("Content-Length"):
             self.close_connection = True
             return None
 
-        # 诶我记得没错的话整个后端不支持这东西吧，谁发谁死妈
         if self.headers.get("Transfer-Encoding"):
             self.close_connection = True
             return None
             
-        # 我认为我的前端不会这样发请求，那请求哪来的你猜呢
-        # 双料特工
         cl_values = self.headers.get_all("Content-Length")
         if cl_values and len(cl_values) > 1:
             self.close_connection = True
@@ -579,10 +576,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             
         try:
             raw_length = self.headers.get("Content-Length", "0")
-            
             length = int(raw_length)
             
-            # 如果你是攻击者就给我爬，如果你是管理员就别这样写
             if length < 0 or length > 1024 * 1024:
                 self.close_connection = True
                 return None
@@ -594,24 +589,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 
                 content_type = self.headers.get("Content-Type", "")
                 
-                if "application/x-www-form-urlencoded" in content_type or "application/json" not in content_type:
-                    try:
-                        body = urllib.parse.parse_qs(raw.decode("utf-8"), keep_blank_values=True)
-                        for k, v in body.items():
-                            d[k] = v[0]
-                    except Exception:
-                        pass
-                
-                if "application/json" in content_type or not d:
+                # 优先 JSON 解析
+                if "application/json" in content_type:
                     try:
                         body = json.loads(raw.decode("utf-8"))
                         if isinstance(body, dict):
                             d.update(body)
                     except Exception:
                         pass
+                # 兼容表单
+                elif "application/x-www-form-urlencoded" in content_type:
+                    try:
+                        body = urllib.parse.parse_qs(raw.decode("utf-8"), keep_blank_values=True)
+                        for k, v in body.items():
+                            d[k] = v[0]
+                    except Exception:
+                        pass
 
         except ValueError:
-            # 你真以为我不知道你发这个请求是要几把干啥吗
             self.close_connection = True
             return None
         except Exception as e:
@@ -645,7 +640,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 enable_api = CFG.get("enable_api_http", True)
                 enable_web = CFG.get("enable_web_http", False)
 
-            admin_path = CFG.get("admin_path", "/my_secret_admin")
             is_web_req = (path == "/web" or path == admin_path)
             is_api_req = path.startswith("/api/")
 
@@ -665,7 +659,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._resp(413, {"ok": False, "error": "Payload Too Large"})
                 return
 
-            # ================= 页面路由 =================
+            # ================= 页面路由 (仅限 GET) =================
             if path == "/web" and method == "GET":
                 web_index = os.path.join(WEB_DIR, "index.html")
                 if os.path.exists(web_index):
@@ -760,7 +754,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     self._resp(400, {"ok": False, "error": "invalid template name"})
                     return
 
-                k = p.get("KEY", p.get("k", ""))
+                k = p.get("KEY", "") # 移除遗留 k
                 key_obj = find_key(k)
                 if not key_obj:
                     audit(f"REJECT auth ip={client_ip}")
@@ -768,7 +762,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     self._resp(401, {"ok": False, "error": "unauthorized"})
                     return
 
-                to_addr = p.get("TO", p.get("s", "")).strip()
+                to_addr = p.get("TO", "").strip() # 移除遗留 s
                 to_addr = to_addr.replace('\r', '').replace('\n', '')
                 if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", to_addr):
                     record_reject()
@@ -787,8 +781,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
                 incoming_rules = tmpl_cfg.get("incoming", [])
                 if isinstance(incoming_rules, list):
-                
-                    RESERVED_KEYS = {"KEY", "k", "TO", "s", "template"}
+                    RESERVED_KEYS = {"KEY", "TO", "template"}
                     
                     for rule in incoming_rules:
                         in_name = rule.get("incomingname")
@@ -797,7 +790,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         if in_name in RESERVED_KEYS:
                             record_reject()
                             self._resp(500, {"ok": False, "error": f"template config error: '{in_name}' is a reserved keyword"})
-                            return   #猜猜如果它把apikey发出去了的话我会被达斯吗
+                            return
                         
                         if not in_name or not replace_str:
                             record_reject()
@@ -1122,7 +1115,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return
 
             # ================= Admin：系统状态 =================
-            if path == "/api/admin/system_info" and method == "GET":
+            if path == "/api/admin/system_info" and method in ("GET", "POST"):
                 if not is_admin(admin_key):
                     self._resp(401, {"ok": False, "error": "admin unauthorized"})
                     return
@@ -1175,12 +1168,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return
 
             # ================= Admin：读取日志 =================
-            if path == "/api/admin/logs" and method == "GET":
+            if path == "/api/admin/logs" and method in ("GET", "POST"):
                 if not is_admin(admin_key):
                     self._resp(401, {"ok": False, "error": "admin unauthorized"})
                     return
                 
-                lines_str = p.get("lines", "50")
+                lines_str = str(p.get("lines", "50"))
                 if not lines_str.isdigit():
                     self._resp(400, {"ok": False, "error": "lines must be a positive integer"})
                     return
@@ -1225,7 +1218,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return
 
             # ================= Admin：全量模板列表 =================
-            if path == "/api/admin/list_templates" and method == "GET":
+            if path == "/api/admin/list_templates" and method in ("GET", "POST"):
                 if not is_admin(admin_key):
                     self._resp(401, {"ok": False, "error": "admin unauthorized"})
                     return
@@ -1314,6 +1307,7 @@ def graceful_shutdown(signum, frame):
     # 启动子线程去关网络端口，因为 srv.shutdown() 是阻塞的
     threading.Thread(target=_do_shutdown, daemon=True).start()
     
+    running_tasks = 0
     for i in range(3, 0, -1):
         time.sleep(1)
         running_tasks = (max_workers * 2) - semaphore._value
@@ -1322,9 +1316,9 @@ def graceful_shutdown(signum, frame):
         else:
             print("[+] 邮件队列已清空")
             break
-    else:       
-        if running_tasks > 0:
-            print(f"[?] 即将有 {running_tasks} 个发信任务被丢弃")
+            
+    if running_tasks > 0:
+        print(f"[?] 即将有 {running_tasks} 个发信任务被丢弃")
                      
     print("[+] 服务器已安全关闭，进程退出")
     sys.exit(0)
@@ -1358,42 +1352,42 @@ if __name__ == "__main__":
     need_https = https_api_on or https_web_on
     # ======================================================
 
-    print("\n" + "="*45)
-    print("EphemeraMailer 启动前依赖检查")
-    print("="*45)
-    
-    if need_http:
-        print(f"  [HTTP]  启动 (API: {'✅ 开' if http_api_on else '❌ 关'} | Web: {'✅ 开' if http_web_on else '❌ 关'})")
-    else:
-        print("  [HTTP]  ❌ 完全关闭 (API和Web都未开启)")
-
-    if need_https:
-        print(f"  [HTTPS] 启动 (API: {'✅ 开' if https_api_on else '❌ 关'} | Web: {'✅ 开' if https_web_on else '❌ 关'})")
-    else:
-        print("  [HTTPS] ❌ 完全关闭 (API和Web都未开启)")
-    
-    print("="*45 + "\n")
-
-    # 物理绑定，强制按顺序输出
-    if need_https:
-        threading.Thread(target=run_https_server, daemon=True).start()
-        time.sleep(0.05) 
-    if need_http:
-        threading.Thread(target=run_http_server, daemon=True).start()
-        time.sleep(0.05) 
-
-    print("\n" + "="*45)
-    print("服务已就绪 等待请求... (按 Ctrl+C 退出)")
-    print("="*45 + "\n")
-    
     if not need_http and not need_https:
-       print("\n" + "="*45)
-       print("服务启动中止：正在进行光合作用")
-       print("="*45)
-       print("[Server]：开摆咯～")
-       print("(检测到 HTTP 和 HTTPS 的 API 与 Web 全部未启动)")
-       print("请检查config.json中的enable_api/enable_web配置")
-       print("="*45 + "\n")
+        print("\n" + "="*45)
+        print("服务启动中止：正在进行光合作用")
+        print("="*45)
+        print("[Server]：开摆咯～")
+        print("(检测到 HTTP 和 HTTPS 的 API 与 Web 全部未启动)")
+        print("请检查config.json中的enable_api/enable_web配置")
+        print("="*45 + "\n")
+    else:
+        print("\n" + "="*45)
+        print("EphemeraMailer 启动前依赖检查")
+        print("="*45)
+        
+        if need_http:
+            print(f"  [HTTP]  启动 (API: {'✅ 开' if http_api_on else '❌ 关'} | Web: {'✅ 开' if http_web_on else '❌ 关'})")
+        else:
+            print("  [HTTP]  ❌ 完全关闭 (API和Web都未开启)")
+
+        if need_https:
+            print(f"  [HTTPS] 启动 (API: {'✅ 开' if https_api_on else '❌ 关'} | Web: {'✅ 开' if https_web_on else '❌ 关'})")
+        else:
+            print("  [HTTPS] ❌ 完全关闭 (API和Web都未开启)")
+        
+        print("="*45 + "\n")
+
+        # 物理绑定，强制按顺序输出
+        if need_https:
+            threading.Thread(target=run_https_server, daemon=True).start()
+            time.sleep(0.05) 
+        if need_http:
+            threading.Thread(target=run_http_server, daemon=True).start()
+            time.sleep(0.05) 
+
+        print("\n" + "="*45)
+        print("服务已就绪 等待请求... (按 Ctrl+C 退出)")
+        print("="*45 + "\n")
 
     main_event = threading.Event()
     try:
