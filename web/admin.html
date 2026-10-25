@@ -39,13 +39,9 @@
     --log-bg:       #06090f;
     --log-txt:      #7b8aa3;
     --header-bg:    rgba(10, 15, 28, 0.6);
-
-    /* 壁纸遮罩与卡片透明度 */
     --bg-mask-color: rgba(10,15,28,0.70);
-    --card-alpha: 0.88; /* 卡片透明度 */
+    --card-alpha: 0.88;
     --logo-bg: linear-gradient(135deg, var(--accent), var(--admin));
-
-    /* 卡片专用底色 + 中性压暗层（不含主题色相） */
     --card-bg-color: var(--panel);
     --page-mask: rgba(2,6,16,.45);
   }
@@ -83,11 +79,9 @@
     --log-bg:       #1a1f2b;
     --log-txt:      #cbd5e1;
     --header-bg:    rgba(242, 239, 233, 0.7);
-
     --bg-mask-color: rgba(242,239,233,0.60);
     --card-alpha: 0.92;
     --logo-bg: linear-gradient(135deg, #0d7a5f, #1e3a8a);
-
     --card-bg-color: var(--panel);
     --page-mask: rgba(255,255,255,.12);
   }
@@ -125,11 +119,9 @@
     --log-bg:       #14201a;
     --log-txt:      #cbd5e1;
     --header-bg:    rgba(236, 242, 233, 0.7);
-
     --bg-mask-color: rgba(236,242,233,0.60);
     --card-alpha: 0.92;
     --logo-bg: linear-gradient(135deg, #1c7a4a, #0f766e);
-
     --card-bg-color: var(--panel);
     --page-mask: rgba(255,255,255,.12);
   }
@@ -137,7 +129,6 @@
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { height:100%; }
 
-  /* 壁纸层：磨砂 + 轻微压饱和 + 微暗，并放大避免模糊边缘露白 */
   body::before {
     content: ''; position: fixed; inset: -3%; z-index: -2; pointer-events: none;
     opacity: 0; transition: opacity .5s ease, filter .5s ease;
@@ -145,7 +136,6 @@
     filter: blur(6px) saturate(.92) brightness(.92);
     transform: scale(1.04);
   }
-  /* 压暗层：中性色，不含主题色相 */
   body::after {
     content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none;
     opacity: 0; transition: opacity .5s ease;
@@ -199,7 +189,6 @@
   .badge-l5::before { content:''; width:6px; height:6px; border-radius:50%; background: var(--danger); animation: pulse 2s infinite; }
   @keyframes pulse { 0%,100% { opacity:1; box-shadow:0 0 0 0 rgba(248,113,113,.5); } 50% { opacity:.6; box-shadow:0 0 0 5px rgba(248,113,113,0); } }
 
-  /* ---------- 主题切换与色调 ---------- */
   .theme-toggle {
     display: inline-flex; align-items: center; justify-content: center;
     width: 36px; height: 36px; border-radius: 10px;
@@ -433,7 +422,6 @@
     .login-card { margin-top: 24px; }
   }
 
-  /* 有壁纸时 Banner / 模态框与卡片同样处理 */
   html.has-bg .head {
     background: color-mix(in srgb, var(--card-bg-color) calc(var(--card-alpha) * 100%), transparent);
     backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
@@ -919,18 +907,29 @@
     });
   }
 
-  function api(path, params) {
-    const url = new URL(path, window.location.origin);
-    if (params) Object.keys(params).forEach(k => url.searchParams.append(k, params[k]));
-    return fetch(url.toString(), { method: "GET", headers: { "X-Admin-Key": AK }, cache: "no-store", credentials: "omit" })
-      .then(async r => { const txt = await r.text(); let d; try { d = JSON.parse(txt); } catch { throw new Error("非 JSON"); } return d; });
-  }
-
-  function apiPost(path, params) {
-    const body = new URLSearchParams();
-    if (params) Object.keys(params).forEach(k => body.append(k, params[k]));
-    return fetch(path, { method: "POST", headers: { "X-Admin-Key": AK, "Content-Type": "application/x-www-form-urlencoded" }, body: body.toString(), cache: "no-store", credentials: "omit" })
-      .then(async r => { const txt = await r.text(); let d; try { d = JSON.parse(txt); } catch { throw new Error("非 JSON"); } return d; });
+  // ==================== 核心：统一的 POST JSON 请求封装 ====================
+  async function apiPost(path, params = {}) {
+    try {
+      const res = await fetch(path, {
+        method: "POST",
+        headers: {
+          "X-Admin-Key": AK,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(params),
+        cache: "no-store",
+        credentials: "omit"
+      });
+      const txt = await res.text();
+      try {
+        return JSON.parse(txt);
+      } catch {
+        throw new Error(`非 JSON 响应 (HTTP ${res.status})`);
+      }
+    } catch (e) {
+      console.error(`API POST Error [${path}]:`, e);
+      throw e;
+    }
   }
 
   function setBusy(state, btn) {
@@ -939,18 +938,13 @@
     document.body.style.cursor = state ? "wait" : "";
   }
 
+  // ==================== 页面数据加载 ====================
+
   async function loadSysInfo() {
     if (!AK || sysInfoInFlight) return;
     sysInfoInFlight = true;
     try {
-      const res = await fetch("/api/admin/system_info", {
-        headers: { "X-Admin-Key": AK },
-        cache: "no-store",
-        credentials: "omit"
-      });
-      let d = null;
-      try { d = await res.json(); } catch { d = null; }
-
+      const d = await apiPost("/api/admin/system_info");
       if (d && d.ok) {
         $("si_uptime").textContent = (d.uptime != null && d.uptime !== "") ? String(d.uptime) : "--";
 
@@ -984,14 +978,7 @@
     if (!AK) return;
     const listMsg = $("templateListMsg");
     try {
-      const res = await fetch("/api/admin/list_templates", {
-        headers: { "X-Admin-Key": AK },
-        cache: "no-store",
-        credentials: "omit"
-      });
-      let d = null;
-      try { d = await res.json(); } catch { d = null; }
-
+      const d = await apiPost("/api/admin/list_templates");
       const rows = $("templateRows");
 
       if (d && d.ok) {
@@ -1034,14 +1021,7 @@
     const box = $("logContent");
     box.textContent = "拉取中...";
     try {
-      const res = await fetch("/api/admin/logs?lines=" + encodeURIComponent(lines), {
-        headers: { "X-Admin-Key": AK },
-        cache: "no-store",
-        credentials: "omit"
-      });
-      let d = null;
-      try { d = await res.json(); } catch { d = null; }
-
+      const d = await apiPost("/api/admin/logs", { lines: lines });
       if (d && d.ok) {
         box.textContent = (d.logs != null && String(d.logs) !== "") ? String(d.logs) : "暂无日志";
         requestAnimationFrame(() => { box.scrollTop = box.scrollHeight; });
@@ -1062,7 +1042,7 @@
     AK = key;
     setBusy(true, $("unlockBtn"));
     try {
-      const d = await api("/api/keys");
+      const d = await apiPost("/api/keys");
       if (d && d.ok) {
         $("loginCard").classList.add("hide");
         $("dashboardWrap").classList.remove("hide");
@@ -1212,7 +1192,7 @@
   async function refresh() {
     if (!AK || busy) return;
     try {
-      const d = await api("/api/keys");
+      const d = await apiPost("/api/keys");
       if (d && d.ok) {
         renderKeys(d.keys || []);
         hideMsg($("listMsg"));
@@ -1232,7 +1212,7 @@
 
     setBusy(true, $("createBtn"));
     try {
-      const d = await api("/api/keys/create", { note, perm });
+      const d = await apiPost("/api/keys/create", { note, perm });
       if (d && d.ok) {
         $("newKeyBox").classList.remove("hide");
         $("newKeyVal").textContent = d.key || "";
@@ -1259,7 +1239,7 @@
     if (!ok) return;
 
     try {
-      const d = await api("/api/keys/revoke", { id });
+      const d = await apiPost("/api/keys/revoke", { id });
       if (d && d.ok) {
         await refresh();
 
@@ -1284,7 +1264,7 @@
   async function changePerm(id, perm) {
     if (!Number.isFinite(id) || busy) return;
     try {
-      const d = await api("/api/keys/perm", { id, perm });
+      const d = await apiPost("/api/keys/perm", { id, perm });
       if (d && d.ok) {
         await refresh();
       } else {
