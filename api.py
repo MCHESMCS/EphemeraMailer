@@ -781,9 +781,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
                 incoming_rules = tmpl_cfg.get("incoming", [])
                 if isinstance(incoming_rules, list):
+                
+                    RESERVED_KEYS = {"KEY", "k", "TO", "s", "template"}
+                    
                     for rule in incoming_rules:
                         in_name = rule.get("incomingname")
                         replace_str = rule.get("replace_string")
+                        
+                        if in_name in RESERVED_KEYS:
+                            record_reject()
+                            self._resp(500, {"ok": False, "error": f"template config error: '{in_name}' is a reserved keyword"})
+                            return   #猜猜如果它把apikey发出去了的话我会被达斯吗
+                        
                         if not in_name or not replace_str:
                             record_reject()
                             self._resp(500, {"ok": False, "error": f"template config error: invalid incoming rule"})
