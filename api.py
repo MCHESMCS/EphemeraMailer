@@ -556,8 +556,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             d[k] = v[0]
         try:
             length = int(self.headers.get("Content-Length", 0) or 0)
+            # 长度超过1mb给你骨灰扬咯
             if length > 1024 * 1024:
+                self.close_connection = True  # 你给我滚出服务器
                 return None 
+                
             if length > 0:
                 raw = self.rfile.read(length)
                 if not raw: return d
@@ -623,6 +626,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             p = self._params(parsed)
             if p is None:
                 record_reject()
+                self.close_connection = True
                 self._resp(413, {"ok": False, "error": "Payload Too Large"})
                 return
 
