@@ -265,20 +265,30 @@ ensure_configs()
 
 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
     CFG = json.load(f)
-    
-# 加载配置
-with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-    CFG = json.load(f)
 
-# ======== 兄弟兄弟你的前端怎么和后端在打架 =============
+# ======== 你们不要再打了啦，住手 =============
 
 admin_path = CFG.get("admin_path", "/my_secret_admin")
 if not admin_path.startswith("/"):
     admin_path = "/" + admin_path
+    
 if admin_path == "/api" or admin_path.startswith("/api/"):
     print("\n" + "!"*60)
     print("[!] 致命错误: admin_path 不能以 /api 开头 这会与系统 API 路由发生严重冲突")
-    print("[!] 请修改 config.json 中的 admin_path 配置。")
+    print("[!] 请修改 config.json 中的 admin_path 配置")
+    print("!"*60 + "\n")
+    sys.exit(1)
+    
+if admin_path == "/web" or admin_path == "/":
+    print("\n" + "!"*60)
+    print(f"[!] 致命错误: admin_path 不能设置为 '{admin_path}'，这会与系统默认 Web 路由冲突")
+    print("[!] 请修改 config.json 中的 admin_path 配置")
+    print("!"*60 + "\n")
+    sys.exit(1)
+
+if admin_path == "/assets" or admin_path.startswith("/assets/"):
+    print("\n" + "!"*60)
+    print("[!] 致命错误: admin_path 不能以 /assets 开头，这会与静态资源路由冲突")
     print("!"*60 + "\n")
     sys.exit(1)
 
