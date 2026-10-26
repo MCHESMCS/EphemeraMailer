@@ -33,7 +33,9 @@ ASSETS_DIR = os.path.join(BASE_DIR, "assets")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 LATEST_LOG = os.path.join(LOG_DIR, "latest.log")
 
-_keys_cache = None
+_keys_cache = {"keys": []}
+_keys_dict = {}        
+_keys_mtime = 0
 _keys_lock = threading.RLock()
 _temp_key_lock = threading.Lock()
 
@@ -336,21 +338,35 @@ def check_rate_limit(ip, key):
         return True, ""
 
 # ==================== 内存缓存 Keys ====================
-def load_keys():
-    global _keys_cache
-    with _keys_lock: 
-        if _keys_cache is not None:
-            return copy.deepcopy(_keys_cache)
+def reload_keys_if_changed():
+    global _keys_mtime, _keys_cache, _keys_dict
+    while True:
         try:
-            with open(KEYS_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if "keys" not in data:
-                    data["keys"] = []
-                _keys_cache = data
-                return copy.deepcopy(data)
+            if os.path.exists(KEYS_PATH):
+                mtime = os.stat(KEYS_PATH).st_mtime
+                if mtime != _keys_mtime:
+                    with open(KEYS_PATH, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if "keys" not in data:
+                        data["keys"] = []
+                    
+                    # 构建新 O(1) 字典
+                    new_dict = {}
+                    for item in data["keys"]:
+                        if item.get("status") == "active":
+                            new_dict[item["key"]] = item
+                    
+                    with _keys_lock:
+                        _keys_cache = data
+                        _keys_dict = new_dict
+                        _keys_mtime = mtime
         except Exception as e:
-            audit(f"LOAD_KEYS_ERR {repr(e)}")
-            return {"keys": []}
+            audit(f"KEYS_RELOAD_ERR {repr(e)}")
+        time.sleep(1)
+
+def load_keys():
+    with _keys_lock: 
+        return copy.deepcopy(_keys_cache)
 
 def save_keys(new_data, deleted_ids=None):
     global _keys_cache
@@ -391,10 +407,9 @@ def save_keys(new_data, deleted_ids=None):
 def find_key(k):
     if not k:
         return None
-    for key_obj in load_keys()["keys"]:
-        if key_obj["status"] == "active" and secrets.compare_digest(key_obj["key"], k):
-            return key_obj
-    return None
+    with _keys_lock:
+        key_obj = _keys_dict.get(k)
+        return copy.deepcopy(key_obj) if key_obj else None
 
 def is_admin(k):
     key_obj = find_key(k)
@@ -708,7 +723,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return
 
             # ================= 供前端拉取模板注册表 =================
-            if path == "/api/templates" and method == "GET":
+            if path == "/api/templates" and method in ("GET", "POST"):
                 templates = []
                 if os.path.exists(HTML_DIR):
                     for d in os.listdir(HTML_DIR):
@@ -1328,6 +1343,9 @@ signal.signal(signal.SIGINT, graceful_shutdown)
 signal.signal(signal.SIGTERM, graceful_shutdown)
 
 if __name__ == "__main__":
+    threading.Thread(target=reload_keys_if_changed, daemon=True).start()
+    time.sleep(1) #喜闻乐见的睡眠环节
+    
     init_admin_key()
     
     # ==================== 宏观依赖强管控 ====================
