@@ -73,6 +73,7 @@ _cluster_lock = threading.Lock()
 # 完啦
 _global_threat_state = {"high_count": 0, "critical_count": 0, "last_reset": time.time()}
 _global_threat_lock = threading.Lock()
+
 # ==================== 核心启动时间 ====================
 START_TIME = time.time() 
 
@@ -138,7 +139,7 @@ DEFAULT_ACCESS_CONFIG = {
 DEFAULT_DANGER_CFG = {
     "enabled": True,
     "split_log": True,
-    "ip_whitelist": ["127.0.0.1", "::1"],  #打到内网了 那还说啥了给你了
+    "ip_whitelist": ["127.0.0.1", "::1"],  # 打到内网了 那还说啥了给你了
     "default_policy": {
         "threshold": 10,
         "window_sec": 60,
@@ -658,6 +659,16 @@ def record_danger(path, ip):
             
             if is_cluster:
                 current_prio = "critical"
+                # [ACCESS-CTRL] 让我看看这一车面包人从哪来的
+                with _cluster_lock:
+                    if matched_zone_key not in _cluster_events or now - _cluster_events[matched_zone_key]["time"] > 300:
+                        _cluster_events[matched_zone_key] = {
+                            "id": f"EVT-CLUSTER-{secrets.token_hex(4)}",
+                            "time": now
+                        }
+                    cluster_event_id = _cluster_events[matched_zone_key]["id"]
+            else:
+                cluster_event_id = ""
             
             with _active_threats_lock:
                 threat_info = _active_threats.get(ip)
@@ -671,7 +682,7 @@ def record_danger(path, ip):
                         elif threat_info["level"] == "high": current_prio = "critical"
                 
                 if not is_sustained:
-                    event_id = f"EVT-{secrets.token_hex(4)}"
+                    event_id = cluster_event_id if is_cluster else f"EVT-{secrets.token_hex(4)}"
                 
                 _active_threats[ip] = {"event_id": event_id, "last_seen": now, "level": current_prio}
         else:
@@ -1033,7 +1044,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     record_reject()
                     self._resp(405, {"ok": False, "error": "GET method not allowed"})
                     return
-
+                    
             p = self._params(parsed)
             if p is None:
                 record_reject()
@@ -1626,6 +1637,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                             })
                 self._resp(200, {"ok": True, "templates": all_tmpls})
                 return
+
+            # [ACCESS-CTRL] 抓取所有 API 未命中路由的随机路径扫描
+            if is_api_req:
+                record_danger(path, client_ip)
 
             self._resp(404, {"ok": False, "error": "not found"})
         except Exception as e:
