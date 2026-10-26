@@ -74,6 +74,11 @@ _cluster_lock = threading.Lock()
 _global_threat_state = {"high_count": 0, "critical_count": 0, "last_reset": time.time()}
 _global_threat_lock = threading.Lock()
 
+# 增加一个节拍器ovo
+_config_tick = threading.Event()
+_config_reloading = threading.Lock()
+# 上面的是害怕进程没跑完又继续拉，容易引发玄学报错甚至内存溢出(排队问题)
+
 # ==================== 核心启动时间 ====================
 START_TIME = time.time() 
 
@@ -391,6 +396,8 @@ max_workers = min(CFG.get("max_concurrent_sends", 5), 32)
 executor = ThreadPoolExecutor(max_workers=max_workers)
 semaphore = threading.Semaphore(max_workers * 2)
 _log_lock = threading.Lock()
+# 因为攻击者可能通过一些手段导致reload无法加载进线程然后废掉热重载,因此必须新建,否则可能会导致SOAR的重载介入失败(实际上我给log加功能就是为了这盘菜)
+_config_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="ConfigReloader")
 
 # ==================== 轻量限流器 ====================
 _rate_hits_ip = defaultdict(list)
@@ -464,81 +471,101 @@ def check_rate_limit(ip, key):
         _rate_hits_key[key].append(now)
         return True, ""
 
-# ==================== 内存缓存 Keys ====================
-def reload_keys_if_changed():
-    global _keys_mtime, _keys_cache, _keys_dict
-    while True:
-        try:
-            if os.path.exists(KEYS_PATH):
-                mtime = os.stat(KEYS_PATH).st_mtime
-                if mtime != _keys_mtime:
-                    with open(KEYS_PATH, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    if "keys" not in data:
-                        data["keys"] = []
-                    
-                    # 构建新 O(1) 字典
-                    new_dict = {}
-                    for item in data["keys"]:
-                        if item.get("status") == "active":
-                            new_dict[item["key"]] = item
-                    
-                    with _keys_lock:
-                        _keys_cache = data
-                        _keys_dict = new_dict
-                        _keys_mtime = mtime
-        except Exception as e:
-            audit(f"KEYS_RELOAD_ERR {repr(e)}")
-        time.sleep(1)
+# ==================== 配置热重载（Event） ====================
 
-# [ACCESS-CTRL] 独立热重载线程
-def reload_access_if_changed():
+def _reload_keys():
+    global _keys_mtime, _keys_cache, _keys_dict
+    try:
+        if os.path.exists(KEYS_PATH):
+            mtime = os.stat(KEYS_PATH).st_mtime
+            if mtime != _keys_mtime:
+                with open(KEYS_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if "keys" not in data:
+                    data["keys"] = []
+                
+                new_dict = {}
+                for item in data["keys"]:
+                    if item.get("status") == "active":
+                        new_dict[item["key"]] = item
+                
+                with _keys_lock:
+                    _keys_cache = data
+                    _keys_dict = new_dict
+                    _keys_mtime = mtime
+    except Exception as e:
+        audit(f"KEYS_RELOAD_ERR {repr(e)}")
+
+def _reload_access():
     global _access_rules, _access_mtime
-    while True:
-        try:
-            if os.path.exists(ACCESS_CONFIG_PATH):
-                mtime = os.stat(ACCESS_CONFIG_PATH).st_mtime
-                if mtime != _access_mtime:
-                    with open(ACCESS_CONFIG_PATH, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    if not isinstance(data, dict):
-                        data = dict(DEFAULT_ACCESS_CONFIG)
-                    if "routes" not in data or not isinstance(data["routes"], dict):
-                        data["routes"] = {}
-                    if data.get("default") not in ("all", "get", "post", "none"):
-                        data["default"] = "post"
-                    with _access_lock:
-                        _access_rules = data
-                        _access_mtime = mtime
-        except Exception as e:
-            audit(f"ACCESS_RELOAD_ERR {repr(e)}")
-        time.sleep(1)
-        
-def reload_danger_if_changed():
+    try:
+        if os.path.exists(ACCESS_CONFIG_PATH):
+            mtime = os.stat(ACCESS_CONFIG_PATH).st_mtime
+            if mtime != _access_mtime:
+                with open(ACCESS_CONFIG_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    data = dict(DEFAULT_ACCESS_CONFIG)
+                if "routes" not in data or not isinstance(data["routes"], dict):
+                    data["routes"] = {}
+                if data.get("default") not in ("all", "get", "post", "none"):
+                    data["default"] = "post"
+                with _access_lock:
+                    _access_rules = data
+                    _access_mtime = mtime
+    except Exception as e:
+        audit(f"ACCESS_RELOAD_ERR {repr(e)}")
+
+def _reload_danger():
     global _danger_cfg, _danger_mtime
+    try:
+        if os.path.exists(ACCESS_DANGER_PATH):
+            mtime = os.stat(ACCESS_DANGER_PATH).st_mtime
+            if mtime != _danger_mtime:
+                with open(ACCESS_DANGER_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    data = dict(DEFAULT_DANGER_CFG)
+                
+                merged = {
+                    "enabled": bool(data.get("enabled", True)),
+                    "split_log": bool(data.get("split_log", True)),
+                    "ip_whitelist": list(data.get("ip_whitelist", ["127.0.0.1", "::1"])),
+                    "default_policy": data.get("default_policy", {"threshold": 10, "window_sec": 60, "apt_detection": False, "allow_shutdown": False}),
+                    "zones": data.get("zones", {})
+                }
+                with _danger_cfg_lock:
+                    _danger_cfg = merged
+                    _danger_mtime = mtime
+    except Exception as e:
+        audit(f"DANGER_RELOAD_ERR {repr(e)}")
+
+def _heartbeat():
     while True:
-        try:
-            if os.path.exists(ACCESS_DANGER_PATH):
-                mtime = os.stat(ACCESS_DANGER_PATH).st_mtime
-                if mtime != _danger_mtime:
-                    with open(ACCESS_DANGER_PATH, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    if not isinstance(data, dict):
-                        data = dict(DEFAULT_DANGER_CFG)
-                    
-                    merged = {
-                        "enabled": bool(data.get("enabled", True)),
-                        "split_log": bool(data.get("split_log", True)),
-                        "ip_whitelist": list(data.get("ip_whitelist", ["127.0.0.1", "::1"])),
-                        "default_policy": data.get("default_policy", {"threshold": 10, "window_sec": 60, "apt_detection": False, "allow_shutdown": False}),
-                        "zones": data.get("zones", {})
-                    }
-                    with _danger_cfg_lock:
-                        _danger_cfg = merged
-                        _danger_mtime = mtime
-        except Exception as e:
-            audit(f"DANGER_RELOAD_ERR {repr(e)}")
         time.sleep(1)
+        _config_tick.set()
+
+def _wait_for_tick():
+    while True:
+        _config_tick.wait()
+        _config_tick.clear()
+        
+        # 尝试获取锁，获取不到说明有什么东西炸了
+        if not _config_reloading.acquire(blocking=False):
+            # 直接丢弃这秒的节拍，防止内存溢出和线程积压
+            continue
+            
+        # 获取到锁就打包任务丢进线程池
+        def _task_wrapper():
+            try:
+                _reload_keys()
+                _reload_access()
+                _reload_danger()
+            finally:
+                # 无论成功失败，必须释放锁，否则会因为一次失败导致下一次重载永远不会来临
+                _config_reloading.release()
+        
+        _config_executor.submit(_task_wrapper)
 
 # [ACCESS-CTRL] 路径匹配：精确 > 单段通配 > default
 def _check_access(path):
@@ -1721,10 +1748,10 @@ signal.signal(signal.SIGINT, graceful_shutdown)
 signal.signal(signal.SIGTERM, graceful_shutdown)
 
 if __name__ == "__main__":
-    threading.Thread(target=reload_keys_if_changed, daemon=True).start()
-    threading.Thread(target=reload_access_if_changed, daemon=True).start()
-    threading.Thread(target=reload_danger_if_changed, daemon=True).start()
-    time.sleep(1) #喜闻乐见的睡眠环节
+    threading.Thread(target=_heartbeat, daemon=True).start()
+    threading.Thread(target=_wait_for_tick, daemon=True).start()
+
+    time.sleep(1.1) #多睡0.1秒
     
     init_admin_key()
     
