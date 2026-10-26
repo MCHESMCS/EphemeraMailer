@@ -32,12 +32,30 @@ WEB_DIR = os.path.join(BASE_DIR, "web")
 ASSETS_DIR = os.path.join(BASE_DIR, "assets")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 LATEST_LOG = os.path.join(LOG_DIR, "latest.log")
+DANGER_LOG = os.path.join(LOG_DIR, "danger.log")
+
+# [ACCESS-CTRL] 接口级访问控制目录与配置
+ACCESS_DIR = os.path.join(BASE_DIR, "access-control")
+ACCESS_CONFIG_PATH = os.path.join(ACCESS_DIR, "config.json")
+ACCESS_DANGER_PATH = os.path.join(ACCESS_DIR, "danger.json")
 
 _keys_cache = {"keys": []}
 _keys_dict = {}        
 _keys_mtime = 0
 _keys_lock = threading.RLock()
 _temp_key_lock = threading.Lock()
+
+# [ACCESS-CTRL] 访问控制缓存与危险感知
+_access_rules = {"default": "post", "routes": {}}
+_access_mtime = 0
+_access_lock = threading.RLock()
+
+_danger_cfg = {"enabled": True, "threshold": 10, "window_sec": 60, "split_log": True}
+_danger_mtime = 0
+_danger_cfg_lock = threading.RLock()
+
+_danger_hits = defaultdict(list)
+_danger_lock = threading.Lock()
 
 # ==================== 核心启动时间 ====================
 START_TIME = time.time() 
@@ -80,6 +98,34 @@ DEFAULT_HTML_CONTENT = """<!DOCTYPE html>
 </body></html>
 """
 
+# ==================== 默认访问控制配置 ====================
+# [ACCESS-CTRL] 首次启动自动生成的接口授权表
+DEFAULT_ACCESS_CONFIG = {
+    "default": "post",
+    "routes": {
+        "/api/templates": "post",
+        "/api/web_send": "all",
+        "/api/*/send": "post",
+        "/api/keys": "post",
+        "/api/keys/create": "post",
+        "/api/keys/revoke": "post",
+        "/api/keys/perm": "post",
+        "/api/admin/create_template": "post",
+        "/api/admin/update_template": "post",
+        "/api/admin/toggle_template_web": "post",
+        "/api/admin/system_info": "post",
+        "/api/admin/logs": "post",
+        "/api/admin/list_templates": "post"
+    }
+}
+
+DEFAULT_DANGER_CFG = {
+    "enabled": True,
+    "threshold": 10,
+    "window_sec": 60,
+    "split_log": True
+}
+
 # ==================== 工具类 ====================
 def get_local_ip():
     try:
@@ -108,17 +154,25 @@ def init_wizard():
     print("="*60)
     
     try:
-        listen_port = int(input("1. HTTP API/Web 监听端口 [默认 8088]: ").strip() or 8088)
-        https_port = int(input("2. HTTPS API/Web 监听端口 [默认 8443]: ").strip() or 8443)
+        listen_port = int(input("1. HTTP 监听端口 [默认 8088]: ").strip() or 8088)
+        https_port = int(input("2. HTTPS 监听端口 [默认 8443]: ").strip() or 8443)
         
-        enable_get = input("3. 是否允许 GET 请求发信? (y/n) [默认 n]: ").strip().lower() == "y"
-        enable_web = input("4. 是否开启 HTTPS Web 发信页? (y/n) [默认 y]: ").strip().lower() != "n"
+        enable_api_http = input("3. 是否开启 HTTP API? (y/n) [默认 y]: ").strip().lower() != "n"
+        enable_api_https = input("4. 是否开启 HTTPS API (需证书/私钥)? (y/n) [默认 y]: ").strip().lower() != "n"
         
         certfile = "certs/server.crt"
         keyfile = "certs/server.key"
-        if enable_web:
-            certfile = input("   - 证书路径 [默认 certs/server.crt]: ").strip() or "certs/server.crt"
-            keyfile = input("   - 私钥路径 [默认 certs/server.key]: ").strip() or "certs/server.key"
+        if enable_api_https:
+            certfile = input("   - HTTPS 证书路径 [默认 certs/server.crt]: ").strip() or "certs/server.crt"
+            keyfile = input("   - HTTPS 私钥路径 [默认 certs/server.key]: ").strip() or "certs/server.key"
+        
+        enable_web_page_http = False
+        if enable_api_http:
+            enable_web_page_http = input("   - HTTP API 已开启，是否同时允许通过 HTTP 访问 Web 页面 (发信页 + 管理页)? (y/n) [默认 n]: ").strip().lower() == "y"
+
+        enable_web_page_https = False
+        if enable_api_https:
+            enable_web_page_https = input("   - HTTPS API 已开启，是否同时允许通过 HTTPS 访问 Web 页面 (发信页 + 管理页)? (y/n) [默认 y]: ").strip().lower() != "n"
 
         admin_path = input("5. 管理后台隐藏路径 [默认 /my_secret_admin]: ").strip() or "/my_secret_admin"
         
@@ -142,11 +196,10 @@ def init_wizard():
         config = {
             "listen_port": listen_port,
             "https_port": https_port,
-            "enable_get": enable_get,
-            "enable_web_http": False,
-            "enable_api_http": True,
-            "enable_web_https": enable_web,
-            "enable_api_https": True,
+            "enable_web_http": enable_web_page_http,
+            "enable_api_http": enable_api_http,
+            "enable_web_https": enable_web_page_https,
+            "enable_api_https": enable_api_https,
             "certfile": certfile,
             "keyfile": keyfile,
             "admin_path": admin_path,
@@ -206,7 +259,7 @@ def init_wizard():
         os.chmod(KEYS_PATH, 0o600)
         _keys_cache = test_data
 
-        do_test = input("👉 是否现在生成测试链接以验证配置是否正确？ (y/n) [默认 y]: ").strip().lower() != "n"
+        do_test = input("👉 是否现在生成测试命令以验证配置是否正确？ (y/n) [默认 y]: ").strip().lower() != "n"
         if do_test:
             print("\n" + "-"*60)
             test_to = input(f"📧 请输入用于接收测试邮件的收件邮箱 [默认发送到发件人自己 {from_addr}]: ").strip()
@@ -217,18 +270,20 @@ def init_wizard():
             public_ip = get_public_ip()
             
             test_code = str(secrets.randbelow(9000) + 1000)
-            proto = "https" if enable_web else "http"
-            port = https_port if enable_web else listen_port
+            proto = "https" if enable_api_https else "http"
+            port = https_port if enable_api_https else listen_port
             
-            if not enable_get:
-                print(f"\n⚠️  您禁用了 GET 请求，无法直接通过浏览器链接测试。")
-                print(f"✅ 若需验证，请稍后启动服务后使用 POST 测试")
-            else:
-                print(f"\n✅ 若配置正确，收件箱 {test_to} 应当收到一封验证码为 {test_code} 的邮件。")
-                print("\n🌐 公网访问测试 (复制到浏览器):")
-                print(f"   {proto}://{public_ip}:{port}/api/v1/send?TO={test_to}&KEY={temp_test_key}&code={test_code}")
-                print("\n🏠 内网访问测试 (复制到浏览器):")
-                print(f"   {proto}://{local_ip}:{port}/api/v1/send?TO={test_to}&KEY={temp_test_key}&code={test_code}")
+            print(f"\n✅ 若配置正确，收件箱 {test_to} 应当收到一封验证码为 {test_code} 的邮件。")
+            print(f"\n⚠️  默认策略下 /api/*/send 仅允许 POST，请使用以下命令测试：")
+            print(f"\n🌐 公网测试:")
+            print(f"   curl -X POST '{proto}://{public_ip}:{port}/api/v1/send' \\")
+            print(f"     -H 'Content-Type: application/json' \\")
+            print(f"     -d '{{\"KEY\":\"{temp_test_key}\",\"TO\":\"{test_to}\",\"code\":\"{test_code}\"}}'")
+            print(f"\n🏠 内网测试:")
+            print(f"   curl -X POST '{proto}://{local_ip}:{port}/api/v1/send' \\")
+            print(f"     -H 'Content-Type: application/json' \\")
+            print(f"     -d '{{\"KEY\":\"{temp_test_key}\",\"TO\":\"{test_to}\",\"code\":\"{test_code}\"}}'")
+            print(f"\n💡 如需 GET 链接发信，请启动后修改 access-control/config.json 中 \"/api/*/send\" 为 \"all\" 或 \"get\"。")
             
             print("\n" + "="*60)
             print("🔑 您的初始 Admin Key (请务必妥善保存):")
@@ -253,6 +308,19 @@ def ensure_configs():
             json.dump({"keys": []}, f, ensure_ascii=False, indent=4)
         os.chmod(KEYS_PATH, 0o600)
 
+    # [ACCESS-CTRL] 首次启动生成接口授权表
+    if not os.path.exists(ACCESS_DIR):
+        os.makedirs(ACCESS_DIR)
+    if not os.path.exists(ACCESS_CONFIG_PATH):
+        with open(ACCESS_CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(DEFAULT_ACCESS_CONFIG, f, ensure_ascii=False, indent=4)
+        os.chmod(ACCESS_CONFIG_PATH, 0o600)
+        print("[*] 已自动生成接口访问控制配置 access-control/config.json")
+    if not os.path.exists(ACCESS_DANGER_PATH):
+        with open(ACCESS_DANGER_PATH, "w", encoding="utf-8") as f:
+            json.dump(DEFAULT_DANGER_CFG, f, ensure_ascii=False, indent=4)
+        os.chmod(ACCESS_DANGER_PATH, 0o600)
+        print("[*] 已自动生成危险感知配置 access-control/danger.json")
     if not os.path.exists(WEB_DIR): os.makedirs(WEB_DIR)
     if not os.path.exists(ASSETS_DIR): os.makedirs(ASSETS_DIR)
     
@@ -308,18 +376,29 @@ _rate_lock = threading.Lock()
 
 def clean_rate_dicts():
     while True:
-        time.sleep(60)
-        now = time.time()
-        with _rate_lock:
-            for d in [_rate_hits_ip, _rate_hits_key]:
-                for k in list(d.keys()):
-                    d[k] = [t for t in d[k] if t > now - 60]
-                    if not d[k]:
-                        del d[k]
-        with _stats_lock:
-            while _rejected_timestamps and _rejected_timestamps[0] < now - 60:
-                _rejected_timestamps.popleft()
-
+        try:
+            time.sleep(60)
+            now = time.time()
+            with _rate_lock:
+                for d in [_rate_hits_ip, _rate_hits_key]:
+                    for k in list(d.keys()):
+                        d[k] = [t for t in d[k] if t > now - 60]
+                        if not d[k]:
+                            del d[k]
+            with _stats_lock:
+                while _rejected_timestamps and _rejected_timestamps[0] < now - 60:
+                    _rejected_timestamps.popleft()
+            # [ACCESS-CTRL] 同步清理危险感知计数窗口
+            with _danger_cfg_lock:
+                danger_window = _danger_cfg.get("window_sec", 60)
+            with _danger_lock:
+                for k in list(_danger_hits.keys()):
+                    _danger_hits[k] = [t for t in _danger_hits[k] if t > now - danger_window]
+                    if not _danger_hits[k]:
+                        del _danger_hits[k]
+        except Exception as e:
+            audit(f"CLEAN_ERR {repr(e)}")
+            
 threading.Thread(target=clean_rate_dicts, daemon=True).start()
 
 def check_rate_limit(ip, key):
@@ -363,6 +442,99 @@ def reload_keys_if_changed():
         except Exception as e:
             audit(f"KEYS_RELOAD_ERR {repr(e)}")
         time.sleep(1)
+
+# [ACCESS-CTRL] 独立热重载线程
+def reload_access_if_changed():
+    global _access_rules, _access_mtime
+    while True:
+        try:
+            if os.path.exists(ACCESS_CONFIG_PATH):
+                mtime = os.stat(ACCESS_CONFIG_PATH).st_mtime
+                if mtime != _access_mtime:
+                    with open(ACCESS_CONFIG_PATH, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if not isinstance(data, dict):
+                        data = dict(DEFAULT_ACCESS_CONFIG)
+                    if "routes" not in data or not isinstance(data["routes"], dict):
+                        data["routes"] = {}
+                    if data.get("default") not in ("all", "get", "post", "none"):
+                        data["default"] = "post"
+                    with _access_lock:
+                        _access_rules = data
+                        _access_mtime = mtime
+        except Exception as e:
+            audit(f"ACCESS_RELOAD_ERR {repr(e)}")
+        time.sleep(1)
+        
+def reload_danger_if_changed():
+    global _danger_cfg, _danger_mtime
+    while True:
+        try:
+            if os.path.exists(ACCESS_DANGER_PATH):
+                mtime = os.stat(ACCESS_DANGER_PATH).st_mtime
+                if mtime != _danger_mtime:
+                    with open(ACCESS_DANGER_PATH, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if not isinstance(data, dict):
+                        data = dict(DEFAULT_DANGER_CFG)
+                    merged = {
+                        "enabled": bool(data.get("enabled", True)),
+                        "threshold": int(data.get("threshold", 10)),
+                        "window_sec": int(data.get("window_sec", 60)),
+                        "split_log": bool(data.get("split_log", True))
+                    }
+                    with _danger_cfg_lock:
+                        _danger_cfg = merged
+                        _danger_mtime = mtime
+        except Exception as e:
+            audit(f"DANGER_RELOAD_ERR {repr(e)}")
+        time.sleep(1)
+
+# [ACCESS-CTRL] 路径匹配：精确 > 单段通配 > default
+def _check_access(path):
+    with _access_lock:
+        routes = dict(_access_rules.get("routes", {}))
+        default = _access_rules.get("default", "post")
+    if path in routes:
+        return routes[path]
+    for rule, val in routes.items():
+        if "*" in rule:
+            pattern = "^" + re.escape(rule).replace(r"\*", "[^/]+") + "$"
+            if re.match(pattern, path):
+                return val
+    return default
+
+# [ACCESS-CTRL] 危险感知：滑动窗口计数，达阈值告警
+def _write_danger_log(line):
+    with _log_lock:
+        try:
+            if not os.path.exists(LOG_DIR):
+                os.makedirs(LOG_DIR)
+            with open(DANGER_LOG, "a", encoding="utf-8") as f:
+                f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {line}\n")
+        except Exception:
+            pass
+
+def record_danger(path, ip):
+    with _danger_cfg_lock:
+        cfg = dict(_danger_cfg)
+    if not cfg.get("enabled", True):
+        return
+    threshold = cfg.get("threshold", 10)
+    window = cfg.get("window_sec", 60)
+    now = time.time()
+    key = f"{path}|{ip}"
+    with _danger_lock:
+        hits = [t for t in _danger_hits[key] if t > now - window]
+        hits.append(now)
+        _danger_hits[key] = hits
+        count = len(hits)
+    if count == threshold:
+        line = f"DANGER_PROBE ip={ip} path={path} count={count} window={window}"
+        if cfg.get("split_log", True):
+            _write_danger_log(line)
+        else:
+            audit(line)
 
 def load_keys():
     with _keys_lock: 
@@ -667,6 +839,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return
             # ========================================================
 
+            # [ACCESS-CTRL] 接口级方法授权：在鉴权、读 body 之前，零开销
+            if is_api_req:
+                allowed = _check_access(path)
+                if allowed == "none":
+                    record_danger(path, client_ip)
+                    self._resp(404, {"ok": False, "error": "not found"})
+                    return
+                if allowed == "get" and method == "POST":
+                    record_reject()
+                    self._resp(405, {"ok": False, "error": "POST method not allowed"})
+                    return
+                if allowed == "post" and method == "GET":
+                    record_reject()
+                    self._resp(405, {"ok": False, "error": "GET method not allowed"})
+                    return
+
             p = self._params(parsed)
             if p is None:
                 record_reject()
@@ -751,10 +939,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # ================= 动态模板发信 =================
             if path.startswith("/api/") and (path.endswith("/send") or path == "/api/web_send"):
                 is_web = (path == "/api/web_send")
-                if method == "GET" and not is_web and not CFG.get("enable_get", False):
-                    record_reject()
-                    self._resp(403, {"ok": False, "error": "GET send is disabled"})
-                    return
 
                 if is_web: template_name = p.get("template", "v1")
                 else:
@@ -1344,6 +1528,8 @@ signal.signal(signal.SIGTERM, graceful_shutdown)
 
 if __name__ == "__main__":
     threading.Thread(target=reload_keys_if_changed, daemon=True).start()
+    threading.Thread(target=reload_access_if_changed, daemon=True).start()
+    threading.Thread(target=reload_danger_if_changed, daemon=True).start()
     time.sleep(1) #喜闻乐见的睡眠环节
     
     init_admin_key()
