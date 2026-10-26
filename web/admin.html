@@ -242,10 +242,33 @@
     display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
     padding: 15px 22px; border-bottom: 1px solid var(--line); background: var(--card-head-bg);
     border-radius: var(--radius) var(--radius) 0 0;
+    transition: background-color .15s;
   }
   .card-head h2 { font-size: 13px; font-weight: 600; letter-spacing: .8px; color: var(--txt-dim); text-transform: uppercase; display: flex; align-items: center; gap: 8px; }
   .card-head h2::before { content:''; width:3px; height:14px; border-radius:2px; background: var(--accent); }
   .card-body { padding: 22px; }
+
+  /* === 禁用卡片的丝滑折叠动画 === */
+  .card.is-disabled-card .card-body {
+    display: block !important;
+    overflow: hidden;
+    max-height: 0;
+    opacity: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    /* 呼吸感的缓动曲线 */
+    transition: max-height 0.4s cubic-bezier(0.25, 1, 0.5, 1), 
+                opacity 0.3s ease, 
+                padding 0.4s ease;
+  }
+  
+  .card.is-disabled-card.expanded .card-body {
+    max-height: 300px;
+    opacity: 1;
+    padding-top: 22px;
+    padding-bottom: 22px;
+  }
+  /* ==================================== */
 
   .field { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; align-items: end; }
   .field.two { grid-template-columns: repeat(2, 1fr); }
@@ -434,6 +457,43 @@
     backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
   }
   html.has-bg .badge-l5 { background-color: transparent; }
+
+  /* === Toast 侧拉条 === */
+  .toast-container {
+    position: fixed;
+    top: 24px;
+    right: -320px;
+    z-index: 1000000;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    transition: right 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  }
+  .toast-container.show { right: 24px; }
+  .toast {
+    background: var(--panel-2);
+    border: 1px solid var(--line-2);
+    border-left: 4px solid var(--warn);
+    padding: 14px 20px;
+    border-radius: 8px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+    font-size: 13px;
+    color: var(--txt);
+    min-width: 260px;
+    max-width: 350px;
+    backdrop-filter: blur(12px);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    transform: translateY(-10px);
+    opacity: 0;
+    animation: toastIn 0.3s forwards;
+  }
+  .toast.err { border-left-color: var(--danger); }
+  .toast.info { border-left-color: var(--accent); }
+  @keyframes toastIn { to { transform: translateY(0); opacity: 1; } }
+  .toast.hide { animation: toastOut 0.3s forwards; }
+  @keyframes toastOut { to { transform: translateX(100%); opacity: 0; } }
 </style>
 
 <script>
@@ -457,6 +517,12 @@
 </script>
 </head>
 <body>
+<!-- 承接后端注入的接口权限映射 -->
+<script>
+  const ACCESS_MAP = window.ACCESS_MAP || {{ACCESS_MAP}} || {};
+  const DEFAULT_POLICY = "post";
+</script>
+
 <div class="wrap">
 
   <header class="head">
@@ -652,12 +718,14 @@
   </div>
 </div>
 
+<div class="toast-container" id="toastContainer"></div>
+
 <div class="modal-mask" id="confirmMask" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
   <div class="modal">
     <div class="modal-icon"><svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg></div>
     <div class="modal-title" id="confirmTitle">确认吊销密钥</div>
     <div class="modal-desc" id="confirmDesc"></div>
-    <div class="modal-actions"><button class="btn ghost" id="confirmCancel">取消</button><button class="btn danger" id="confirmOk">确认吊销</button></div>
+    <div class="modal-actions"><button class="btn ghost" id="confirmCancel">取消</button><button class="btn danger" id="confirmOk">确认</button></div>
   </div>
 </div>
 
@@ -785,6 +853,33 @@
     el.innerHTML = "";
   }
 
+  function showToast(text, type = "warn") {
+    const container = document.getElementById("toastContainer");
+    if (!container) return;
+    
+    if (container.children.length === 0) {
+      container.classList.add("show");
+    }
+
+    const toast = document.createElement("div");
+    toast.className = `toast ${type}`;
+    toast.innerHTML = `
+      <svg viewBox="0 0 24 24" style="width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 2;"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+      <span>${escapeHTML(text)}</span>
+    `;
+    container.appendChild(toast);
+
+    setTimeout(() => {
+      toast.classList.add("hide");
+      toast.addEventListener("animationend", () => {
+        toast.remove();
+        if (container.children.length === 0) {
+          container.classList.remove("show");
+        }
+      }, { once: true });
+    }, 5000);
+  }
+
   function syncSelectOptions(wrap) {
     if (!wrap) return;
     const nativeSel = wrap.querySelector('select');
@@ -829,6 +924,19 @@
       if (option) {
         e.stopPropagation();
         const wrap = option.closest('.custom-select-wrap');
+        
+        if (wrap.hasAttribute('data-disabled-api')) {
+          const apiPath = wrap.getAttribute('data-disabled-api');
+          closeAllSelects();
+          openConfirm({
+            title: "功能已被禁用",
+            desc: `接口 <code>${apiPath}</code> 已被后台禁用。<br>若您是管理员，请检查 <code>access-control/config.json</code>。`,
+            okText: "我知道了",
+            showCancel: false
+          });
+          return;
+        }
+
         const textEl = wrap.querySelector('.custom-select-trigger span');
         const nativeSel = wrap.querySelector('select');
 
@@ -867,6 +975,8 @@
     titleEl.textContent = opts.title || "确认操作";
     descEl.innerHTML = opts.desc || "";
     okBtn.textContent = opts.okText || "确认";
+    
+    $("confirmCancel").style.display = opts.showCancel === false ? "none" : "inline-flex";
 
     confirmLastFocus = document.activeElement;
     mask.classList.add("show");
@@ -907,6 +1017,86 @@
     });
   }
 
+  // ==================== 权限控制与降级渲染 ====================
+  function isApiDisabled(path) {
+    if (ACCESS_MAP[path] === "none") return true;
+    for (const rule in ACCESS_MAP) {
+      if (rule.includes("*")) {
+        const regex = new RegExp("^" + rule.replace(/\*/g, "[^/]+") + "$");
+        if (regex.test(path) && ACCESS_MAP[rule] === "none") return true;
+      }
+    }
+    return false;
+  }
+
+  function applyAccessControl() {
+    const cardMap = [
+      { id: "sysInfoCard", api: "/api/admin/system_info" },
+      { id: "mainCard", api: "/api/keys" },
+      { id: "createCard", api: "/api/keys/create" },
+      { id: "templateCard", api: "/api/admin/create_template" },
+      { id: "updateTemplateCard", api: "/api/admin/update_template" },
+      { id: "toggleWebCard", api: "/api/admin/toggle_template_web" },
+      { id: "templateListCard", api: "/api/admin/list_templates" },
+      { id: "logCard", api: "/api/admin/logs" }
+    ];
+
+    cardMap.forEach(item => {
+      const card = document.getElementById(item.id);
+      if (!card) return;
+
+      if (isApiDisabled(item.api)) {
+        card.classList.add("is-disabled-card");
+        
+        const head = card.querySelector(".card-head");
+        const body = card.querySelector(".card-body");
+        const titleEl = head.querySelector("h2");
+
+        // 防止叠 Buff：只有在没有红标的时候才加
+        if (!titleEl.querySelector(".disabled-badge")) {
+          titleEl.innerHTML += ` <span class="disabled-badge" style="font-size: 10px; background: var(--danger-bg); color: var(--danger); padding: 2px 6px; border-radius: 4px; margin-left: 8px; letter-spacing: 0;">DISABLED</span>`;
+        }
+
+        body.innerHTML = `
+          <div style="text-align: center; padding: 12px 20px; color: var(--txt-mute);">
+            <svg viewBox="0 0 24 24" style="width: 32px; height: 32px; stroke: currentColor; fill: none; stroke-width: 1.5; margin-bottom: 12px; opacity: 0.5;"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+            <div style="font-size: 13px; color: var(--txt);">此功能当前未启用</div>
+            <div style="font-size: 12px; margin-top: 6px;">若您是管理员，请检查配置</div>
+          </div>
+        `;
+        
+        // 强制解除封印：重写点击事件
+        head.onclick = (e) => {
+          const btn = e.target.closest("button");
+          
+          // 如果是右上角的刷新按钮，强行测活
+          if (btn) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (item.id === "sysInfoCard") {
+              loadSysInfo(true); 
+            }
+            return;
+          }
+          
+          // 点标题正常展开/收起
+          e.stopPropagation();
+          card.classList.toggle("expanded");
+        };
+
+        body.onclick = (e) => {
+          e.stopPropagation();
+          openConfirm({
+            title: "功能未启用",
+            desc: `此功能当前未启用。<br>若您是管理员，请修改 <code>access-control/config.json</code> 中的接口权限配置。`,
+            okText: "我知道了",
+            showCancel: false
+          });
+        };
+      }
+    });
+  }
+
   // ==================== 核心：统一的 POST JSON 请求封装 ====================
   async function apiPost(path, params = {}) {
     try {
@@ -920,13 +1110,24 @@
         cache: "no-store",
         credentials: "omit"
       });
+      
       const txt = await res.text();
+      let data = null;
       try {
-        return JSON.parse(txt);
+        data = txt ? JSON.parse(txt) : {};
       } catch {
-        throw new Error(`非 JSON 响应 (HTTP ${res.status})`);
+        data = { ok: false, error: `非 JSON 响应 (HTTP ${res.status})` };
       }
+
+      if (!res.ok) {
+        const err = new Error(data.error || `HTTP ${res.status}`);
+        err.status = res.status;
+        err.data = data;
+        throw err;
+      }
+      return data;
     } catch (e) {
+      if (!e.status) e.status = -1; 
       console.error(`API POST Error [${path}]:`, e);
       throw e;
     }
@@ -940,28 +1141,81 @@
 
   // ==================== 页面数据加载 ====================
 
-  async function loadSysInfo() {
+  function renderSysInfo(d) {
+    if (!d || !d.ok) return;
+    $("si_uptime").textContent = (d.uptime != null && d.uptime !== "") ? String(d.uptime) : "--";
+
+    let q = d.running_tasks != null ? String(d.running_tasks) : "0";
+    let s = d.total_success != null ? String(d.total_success) : "0";
+    $("si_queue_success").textContent = `${q} / ${s}`;
+
+    let rejectText = d.reject_1m != null ? String(d.reject_1m) : "--";
+    $("si_reject_1m").textContent = rejectText;
+
+    const mu = Number(d.mem_used_mb), mt = Number(d.mem_total_mb);
+    $("si_mem").textContent = (Number.isFinite(mu) && Number.isFinite(mt))
+      ? mu + " / " + mt + " MB" : "--";
+
+    const tc = Number(d.template_count), ac = Number(d.account_count);
+    $("si_tmpl_acc").textContent = (Number.isFinite(tc) && Number.isFinite(ac))
+      ? tc + " / " + ac : "--";
+  }
+  
+  async function loadSysInfo(isRecoveryAttempt = false) {
     if (!AK || sysInfoInFlight) return;
+    if (!isRecoveryAttempt && isApiDisabled("/api/admin/system_info")) return;
+
     sysInfoInFlight = true;
     try {
       const d = await apiPost("/api/admin/system_info");
       if (d && d.ok) {
-        $("si_uptime").textContent = (d.uptime != null && d.uptime !== "") ? String(d.uptime) : "--";
+        const card = document.getElementById("sysInfoCard");
+        
+        // 如果卡片当前是被封印的状态，并且请求通了，立刻解印
+        if (card && card.classList.contains("is-disabled-card")) {
+          // 把真实的 HTML 架构写回去，不然等下找不到 DOM 会报错
+          card.innerHTML = `
+            <div class="card-head">
+              <h2>系统运行状态</h2>
+              <button class="btn ghost sm" id="sysInfoRefreshBtn">刷新</button>
+            </div>
+            <div class="card-body">
+              <div class="sys-grid">
+                <div class="sys-item"><span class="label">系统运行时间</span><span class="val" id="si_uptime">--</span></div>
+                <div class="sys-item"><span class="label">队列 / 已完成</span><span class="val ok" id="si_queue_success">--</span></div>
+                <div class="sys-item"><span class="label">近 1 分钟拒绝</span><span class="val danger" id="si_reject_1m">--</span></div>
+                <div class="sys-item"><span class="label">内存占用</span><span class="val" id="si_mem">--</span></div>
+                <div class="sys-item"><span class="label">模板 / 账户数</span><span class="val" id="si_tmpl_acc">--</span></div>
+              </div>
+            </div>
+          `;
+          
+          // 移除封印类
+          card.classList.remove("is-disabled-card");
+          card.classList.remove("expanded");
+          
+          // 重新绑定刷新按钮
+          document.getElementById("sysInfoRefreshBtn").addEventListener("click", () => loadSysInfo(true));
+          
+          // 从黑名单里踢掉
+          if (typeof ACCESS_MAP === "object") {
+            delete ACCESS_MAP["/api/admin/system_info"];
+          }
 
-        let q = d.running_tasks != null ? String(d.running_tasks) : "0";
-        let s = d.total_success != null ? String(d.total_success) : "0";
-        $("si_queue_success").textContent = `${q} / ${s}`;
+          // 提示恢复成功
+          showToast("接口已重新上线，状态卡片已恢复更新。", "info");
+        }
 
-        let rejectText = d.reject_1m != null ? String(d.reject_1m) : "--";
-        $("si_reject_1m").textContent = rejectText;
+        renderSysInfo(d);
+        
+        if (!sysInfoTimer) {
+          sysInfoTimer = setInterval(() => {
+            if (AK && !$("dashboardWrap").classList.contains("hide") && document.visibilityState === "visible") {
+              loadSysInfo();
+            }
+          }, 1000);
+        }
 
-        const mu = Number(d.mem_used_mb), mt = Number(d.mem_total_mb);
-        $("si_mem").textContent = (Number.isFinite(mu) && Number.isFinite(mt))
-          ? mu + " / " + mt + " MB" : "--";
-
-        const tc = Number(d.template_count), ac = Number(d.account_count);
-        $("si_tmpl_acc").textContent = (Number.isFinite(tc) && Number.isFinite(ac))
-          ? tc + " / " + ac : "--";
       } else {
         ["si_uptime","si_queue_success","si_reject_1m","si_mem","si_tmpl_acc"].forEach(id => {
           if ($(id)) $(id).textContent = "--";
@@ -969,13 +1223,32 @@
       }
     } catch (e) {
       console.warn("[sysinfo]", e);
+      
+      if (e.status === 404) {
+        if (sysInfoTimer) { clearInterval(sysInfoTimer); sysInfoTimer = null; }
+        
+        if (typeof ACCESS_MAP === "object") {
+          ACCESS_MAP["/api/admin/system_info"] = "none";
+        }
+
+        if (isRecoveryAttempt) {
+          showToast("接口依然返回 404，配置可能尚未生效或未正确修改。", "err");
+        } else {
+          applyAccessControl(); 
+          showToast("后端已关闭状态接口，自动更新已停止。", "err");
+        }
+      } else if (e.status === 401 || e.status === 403) {
+        if (isRecoveryAttempt) showToast("鉴权失败：您的 Key 无效或已过期。", "err");
+      } else {
+        if (isRecoveryAttempt) showToast("测活请求失败：" + e.message, "err");
+      }
     } finally {
       sysInfoInFlight = false;
     }
   }
-
+  
   async function loadTemplateList() {
-    if (!AK) return;
+    if (!AK || isApiDisabled("/api/admin/list_templates")) return;
     const listMsg = $("templateListMsg");
     try {
       const d = await apiPost("/api/admin/list_templates");
@@ -1016,7 +1289,7 @@
   }
 
   async function loadLogs() {
-    if (!AK) return;
+    if (!AK || isApiDisabled("/api/admin/logs")) return;
     const lines = Number($("logLines").value) || 50;
     const box = $("logContent");
     box.textContent = "拉取中...";
@@ -1042,30 +1315,81 @@
     AK = key;
     setBusy(true, $("unlockBtn"));
     try {
-      const d = await apiPost("/api/keys");
-      if (d && d.ok) {
-        $("loginCard").classList.add("hide");
-        $("dashboardWrap").classList.remove("hide");
-        $("adminKey").value = "";
-        renderKeys(d.keys || []);
-        hideMsg($("listMsg"));
+      let isVerified = false;
+      let keysData = null;
+      let sysData = null;
 
-        loadSysInfo();
-        loadTemplateList();
-        loadLogs();
+      // 1. 首选标准接口：/api/keys
+      if (!isApiDisabled("/api/keys")) {
+        try {
+          keysData = await apiPost("/api/keys");
+          isVerified = true;
+        } catch (e) {
+          if (e.status === 401 || e.status === 403) {
+            AK = "";
+            showMsg($("loginMsg"), "验证失败：Key 无效", false);
+            return;
+          }
+          if (e.status !== 404 && e.status !== -1) throw e;
+        }
+      }
 
+      // 2. 降级探针：/api/admin/system_info
+      if (!isVerified && !isApiDisabled("/api/admin/system_info")) {
+        try {
+          sysData = await apiPost("/api/admin/system_info");
+          isVerified = true;
+        } catch (e) {
+          if (e.status === 401 || e.status === 403) {
+            AK = "";
+            showMsg($("loginMsg"), "验证失败：Key 无效", false);
+            return;
+          }
+          if (e.status !== 404 && e.status !== -1) throw e;
+        }
+      }
+
+      // 3. 如果两个验证探针都彻底死了
+      if (!isVerified) {
+        AK = "";
+        showMsg($("loginMsg"), "当前后端未开放任何可操作的 API，Admin 页面无法执行任何操作，已停止加载。", false);
+        return;
+      }
+
+      // 4. 放行，进入控制台
+      $("loginCard").classList.add("hide");
+      $("dashboardWrap").classList.remove("hide");
+      $("adminKey").value = "";
+      hideMsg($("listMsg"));
+
+      if (keysData && keysData.ok) {
+        renderKeys(keysData.keys || []);
+      } else {
+        renderKeys([]);
+      }
+
+      // 只要 system_info 没被禁用，就启动轮询
+      if (!isApiDisabled("/api/admin/system_info")) {
+        if (sysData && sysData.ok) renderSysInfo(sysData);
+        
         if (sysInfoTimer) { clearInterval(sysInfoTimer); sysInfoTimer = null; }
-
         sysInfoTimer = setInterval(() => {
           if (AK && !$("dashboardWrap").classList.contains("hide") && document.visibilityState === "visible") {
             loadSysInfo();
           }
         }, 1000);
-
-      } else {
-        AK = "";
-        showMsg($("loginMsg"), "验证失败：" + ((d && d.error) || "unknown"), false);
       }
+
+      if (!isApiDisabled("/api/keys") && !keysData) {
+        try {
+          const kd = await apiPost("/api/keys");
+          renderKeys(kd.keys || []);
+        } catch(e) {}
+      }
+
+      loadTemplateList();
+      loadLogs();
+
     } catch (e) {
       AK = "";
       showMsg($("loginMsg"), "连接失败：" + e.message, false);
@@ -1112,6 +1436,9 @@
     const activeList  = list.filter(k => k && k.status === "active");
     const revokedList = list.filter(k => k && k.status !== "active");
 
+    const isRevokeDisabled = isApiDisabled("/api/keys/revoke");
+    const isPermDisabled = isApiDisabled("/api/keys/perm");
+
     const rows = $("keyRows");
     if (activeList.length === 0) {
       rows.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:36px;" class="muted">暂无活跃密钥 · 请在上方创建</td></tr>';
@@ -1137,21 +1464,38 @@
             <td class="time-cell pc-only">${escapeHTML(k.created)}</td>
             <td>
               <div class="actions">
-                <div class="custom-select-wrap" id="pWrap_${safeId}">
-                  <div class="custom-select-trigger" tabindex="0" role="button">
-                    <span>${isAdmin ? 'admin' : 'send'}</span>
-                    <svg class="chevron" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+                ${isPermDisabled ? `
+                  <div class="custom-select-wrap" id="pWrap_${safeId}" data-disabled-api="/api/keys/perm">
+                    <div class="custom-select-trigger" tabindex="0" role="button">
+                      <span>${isAdmin ? 'admin' : 'send'}</span>
+                      <svg class="chevron" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+                    </div>
+                    <div class="custom-options">
+                      <div class="custom-option ${!isAdmin ? 'selected' : ''}" data-val="send">send</div>
+                      <div class="custom-option ${isAdmin ? 'selected' : ''}" data-val="admin">admin</div>
+                    </div>
                   </div>
-                  <div class="custom-options">
-                    <div class="custom-option ${!isAdmin ? 'selected' : ''}" data-val="send">send</div>
-                    <div class="custom-option ${isAdmin ? 'selected' : ''}" data-val="admin">admin</div>
+                ` : `
+                  <div class="custom-select-wrap" id="pWrap_${safeId}">
+                    <div class="custom-select-trigger" tabindex="0" role="button">
+                      <span>${isAdmin ? 'admin' : 'send'}</span>
+                      <svg class="chevron" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+                    </div>
+                    <div class="custom-options">
+                      <div class="custom-option ${!isAdmin ? 'selected' : ''}" data-val="send">send</div>
+                      <div class="custom-option ${isAdmin ? 'selected' : ''}" data-val="admin">admin</div>
+                    </div>
+                    <select style="display:none;">
+                      <option value="send" ${!isAdmin ? "selected" : ""}>send</option>
+                      <option value="admin" ${isAdmin ? "selected" : ""}>admin</option>
+                    </select>
                   </div>
-                  <select style="display:none;">
-                    <option value="send" ${!isAdmin ? "selected" : ""}>send</option>
-                    <option value="admin" ${isAdmin ? "selected" : ""}>admin</option>
-                  </select>
-                </div>
-                <button class="btn danger sm" data-act="revoke" data-id="${safeId}">吊销</button>
+                `}
+                ${isRevokeDisabled ? `
+                  <button class="btn danger sm" style="opacity: 0.6;" data-disabled-api="/api/keys/revoke">吊销</button>
+                ` : `
+                  <button class="btn danger sm" data-act="revoke" data-id="${safeId}">吊销</button>
+                `}
               </div>
             </td>
           </tr>`;
@@ -1184,13 +1528,27 @@
   }
 
   $("keyRows").addEventListener("click", e => {
+    const disabledBtn = e.target.closest("[data-disabled-api]");
+    if (disabledBtn && disabledBtn.tagName === "BUTTON") {
+      e.preventDefault();
+      e.stopPropagation();
+      const apiPath = disabledBtn.getAttribute("data-disabled-api");
+      openConfirm({
+        title: "功能已被禁用",
+        desc: `接口 <code>${apiPath}</code> 已被后台禁用。<br>若您是管理员，请检查 <code>access-control/config.json</code>。`,
+        okText: "我知道了",
+        showCancel: false
+      });
+      return;
+    }
+
     const btn = e.target.closest('[data-act="revoke"]');
     if (!btn) return;
     revokeKey(Number(btn.dataset.id));
   });
 
   async function refresh() {
-    if (!AK || busy) return;
+    if (!AK || busy || isApiDisabled("/api/keys")) return;
     try {
       const d = await apiPost("/api/keys");
       if (d && d.ok) {
@@ -1205,7 +1563,7 @@
   }
 
   async function createKey() {
-    if (busy) return;
+    if (busy || isApiDisabled("/api/keys/create")) return;
     hideMsg($("createMsg"));
     const note = $("note").value.trim();
     const perm = $("permSel").value;
@@ -1229,7 +1587,7 @@
   }
 
   async function revokeKey(id) {
-    if (!Number.isFinite(id) || busy) return;
+    if (!Number.isFinite(id) || busy || isApiDisabled("/api/keys/revoke")) return;
 
     const ok = await openConfirm({
       title: "确认吊销密钥",
@@ -1262,7 +1620,7 @@
   }
 
   async function changePerm(id, perm) {
-    if (!Number.isFinite(id) || busy) return;
+    if (!Number.isFinite(id) || busy || isApiDisabled("/api/keys/perm")) return;
     try {
       const d = await apiPost("/api/keys/perm", { id, perm });
       if (d && d.ok) {
@@ -1299,7 +1657,7 @@
   });
 
   $("saveTemplateBtn").addEventListener("click", async () => {
-    if (busy) return;
+    if (busy || isApiDisabled("/api/admin/create_template")) return;
     hideMsg($("templateMsg"));
 
     const id = $("t_id").value.trim();
@@ -1351,7 +1709,7 @@
   });
 
   $("updateTemplateBtn").addEventListener("click", async () => {
-    if (busy) return;
+    if (busy || isApiDisabled("/api/admin/update_template")) return;
     hideMsg($("updateTemplateMsg"));
 
     const id = $("ut_id").value.trim();
@@ -1391,7 +1749,7 @@
   });
 
   $("toggleWebBtn").addEventListener("click", async () => {
-    if (busy) return;
+    if (busy || isApiDisabled("/api/admin/toggle_template_web")) return;
     hideMsg($("toggleWebMsg"));
 
     const id = $("tg_id").value.trim();
@@ -1431,7 +1789,7 @@
     $("newKeyVal").textContent = "";
   });
 
-  $("sysInfoRefreshBtn").addEventListener("click", loadSysInfo);
+  $("sysInfoRefreshBtn").addEventListener("click", () => loadSysInfo(true));
   $("templateListRefreshBtn").addEventListener("click", loadTemplateList);
   $("logRefreshBtn").addEventListener("click", loadLogs);
 
@@ -1447,6 +1805,8 @@
   syncSelectOptions($("permWrap"));
   syncSelectOptions($("tgWrap"));
   syncSelectOptions($("logLineWrap"));
+
+  applyAccessControl();
 
   $("adminKey").focus();
 })();
