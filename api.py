@@ -38,6 +38,7 @@ DANGER_LOG = os.path.join(LOG_DIR, "danger.log")
 ACCESS_DIR = os.path.join(BASE_DIR, "access-control")
 ACCESS_CONFIG_PATH = os.path.join(ACCESS_DIR, "config.json")
 ACCESS_DANGER_PATH = os.path.join(ACCESS_DIR, "danger.json")
+GLOBAL_STATE_PATH = os.path.join(ACCESS_DIR, "global_threat.json")
 
 _keys_cache = {"keys": []}
 _keys_dict = {}        
@@ -45,42 +46,67 @@ _keys_mtime = 0
 _keys_lock = threading.RLock()
 _temp_key_lock = threading.Lock()
 
-# [ACCESS-CTRL] 访问控制缓存与危险感知
+# ==================== 危险感知全局状态 (重构版) ====================
+# 滑动窗口计数，元组 key ("PATH", path, ip) 或 ("ZONE", zone_key, ip)
+_danger_hits = {}
+# 倒排索引：ip -> set of keys（加速 total_hits 计算）
+_hits_by_ip = defaultdict(set)
+_danger_lock = threading.RLock()
+
+# IP 最近访问路径
+_ip_recent_paths = defaultdict(lambda: deque(maxlen=20))
+_ip_paths_lock = threading.Lock()
+
+# 活跃威胁 (ip -> {"event_id", "last_seen", "level", "last_path"})
+_active_threats = {}
+_active_threats_lock = threading.Lock()
+
+# 告警去重集合：key = (ip, count_key) -> 首次触发时间
+_alerted_set = {}
+_alerted_lock = threading.Lock()
+
+# 集群事件 (zone_key -> {"id", "time"})
+_cluster_events = {}
+_cluster_lock = threading.Lock()
+
+# 全局熔断状态
+_global_threat_state = {"high_count": 0, "critical_count": 0, "last_reset": time.time()}
+_global_threat_lock = threading.Lock()
+_global_save_lock = threading.Lock()
+_last_global_save_time = 0
+_persist_thread = None # 用于优雅关闭的引用
+
+# 访问控制缓存与危险感知配置
 _access_rules = {"default": "post", "routes": {}}
 _access_mtime = 0
 _access_lock = threading.RLock()
 
-_danger_cfg = {"enabled": True, "threshold": 10, "window_sec": 60, "split_log": True}
+_danger_cfg = {
+    "enabled": True, 
+    "split_log": True,
+    "ip_whitelist": ["127.0.0.1", "::1"],
+    "default_policy": {"threshold": 10, "window_sec": 60, "apt_detection": False, "allow_shutdown": False},
+    "zones": {},
+    "active_threats_max": 50000
+}
 _danger_mtime = 0
 _danger_cfg_lock = threading.RLock()
 
-# [ACCESS-CTRL] 怎么有种不详的预感
-_danger_hits = defaultdict(list)
-_danger_lock = threading.Lock()
+# 日志写盘锁
+_rotate_lock = threading.Lock()
+_danger_log_lock = threading.Lock()
 
-# 你好像有点眼熟
-_ip_recent_paths = defaultdict(lambda: deque(maxlen=20))
-_ip_paths_lock = threading.Lock()
-
-# 怎么老是你啊
-_active_threats = {}
-_active_threats_lock = threading.Lock()
-
-# 我草，好多人
-_cluster_events = {}
-_cluster_lock = threading.Lock()
-
-# 完啦
-_global_threat_state = {"high_count": 0, "critical_count": 0, "last_reset": time.time()}
-_global_threat_lock = threading.Lock()
-
-#增加一个节拍器ovo
-_config_tick = threading.Event()
-_config_reloading = threading.Lock()
-# 上面的是害怕进程没跑完又继续拉，容易引发玄学报错甚至内存溢出(排队问题)
+# 线程池：危险日志独立异步池（max_workers=2）
+_danger_log_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="DangerLog")
 
 # ==================== 核心启动时间 ====================
 START_TIME = time.time() 
+# 全局预计算 Node ID，防止高频调用 get_local_ip 产生 socket 开销
+NODE_ID = "127.0.0.1" # 占位，稍后重新赋值
+
+# 增加一个节拍器
+_config_tick = threading.Event()
+_config_reloading = threading.Lock()
 
 # ==================== 监控统计 ====================
 STATS_SUCCESS = 0
@@ -121,7 +147,6 @@ DEFAULT_HTML_CONTENT = """<!DOCTYPE html>
 """
 
 # ==================== 默认访问控制配置 ====================
-# [ACCESS-CTRL] 首次启动自动生成的接口授权表
 DEFAULT_ACCESS_CONFIG = {
     "default": "post",
     "routes": {
@@ -328,6 +353,7 @@ def init_wizard():
         sys.exit(1)
 
 def ensure_configs():
+    global NODE_ID
     if not os.path.exists(CONFIG_PATH):
         init_wizard()
         
@@ -336,7 +362,6 @@ def ensure_configs():
             json.dump({"keys": []}, f, ensure_ascii=False, indent=4)
         os.chmod(KEYS_PATH, 0o600)
 
-    # [ACCESS-CTRL] 首次启动生成接口授权表
     if not os.path.exists(ACCESS_DIR):
         os.makedirs(ACCESS_DIR)
     if not os.path.exists(ACCESS_CONFIG_PATH):
@@ -360,6 +385,8 @@ def ensure_configs():
         with open(os.path.join(v1_dir, "content.html"), "w", encoding="utf-8") as f:
             f.write(DEFAULT_HTML_CONTENT)
         print("[*] 已自动生成基础邮件模板 html/v1/")
+    
+    NODE_ID = get_local_ip()
 
 ensure_configs()
 
@@ -396,7 +423,6 @@ max_workers = min(CFG.get("max_concurrent_sends", 5), 32)
 executor = ThreadPoolExecutor(max_workers=max_workers)
 semaphore = threading.Semaphore(max_workers * 2)
 _log_lock = threading.Lock()
-# 因为攻击者可能通过一些手段导致reload无法加载进线程然后废掉热重载,因此必须新建,否则可能会导致SOAR的重载介入失败(实际上我给log加功能就是为了这盘菜)
 _config_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="ConfigReloader")
 
 # ==================== 轻量限流器 ====================
@@ -409,48 +435,96 @@ def clean_rate_dicts():
         try:
             time.sleep(60)
             now = time.time()
+
+            # 1. 限流清理
             with _rate_lock:
                 for d in [_rate_hits_ip, _rate_hits_key]:
                     for k in list(d.keys()):
                         d[k] = [t for t in d[k] if t > now - 60]
-                        if not d[k]:
-                            del d[k]
+                        if not d[k]: del d[k]
             with _stats_lock:
                 while _rejected_timestamps and _rejected_timestamps[0] < now - 60:
                     _rejected_timestamps.popleft()
-            # [ACCESS-CTRL] 清理危险感知计数、画像与过期威胁
+
             with _danger_cfg_lock:
                 danger_cfg_snapshot = dict(_danger_cfg)
-                
-            default_window = danger_cfg_snapshot.get("default_policy", {}).get("window_sec", 60)
-            max_window = default_window
+
+            max_window = int(danger_cfg_snapshot.get("default_policy", {}).get("window_sec", 60))
+            apt_window = 600
             for z in danger_cfg_snapshot.get("zones", {}).values():
-                max_window = max(max_window, z.get("window_sec", 60))
-            
+                max_window = max(max_window, int(z.get("window_sec", 60)))
+                apt_window = max(apt_window, int(z.get("apt_threshold_minutes", 10)) * 60)
+
+            # === 锁内原地清理（杜绝 R71 快照丢数据） ===
             with _danger_lock:
                 for k in list(_danger_hits.keys()):
-                    _danger_hits[k] = [t for t in _danger_hits[k] if t > now - max_window - 60]
-                    if not _danger_hits[k]:
+                    k_window = max_window
+                    if k[0] == "ZONE":
+                        zone_cfg = danger_cfg_snapshot.get("zones", {}).get(k[1], {})
+                        k_window = max(1, int(zone_cfg.get("window_sec", 60)))
+                    elif k[0] == "PATH":
+                        k_window = max(1, int(danger_cfg_snapshot.get("default_policy", {}).get("window_sec", 60)))
+                    
+                    valid = [t for t in _danger_hits[k] if t > now - k_window]
+                    if valid:
+                        _danger_hits[k] = valid
+                    else:
                         del _danger_hits[k]
-                        
+
+                new_hits_by_ip = defaultdict(set)
+                new_zone_attackers = defaultdict(set)
+                for k in _danger_hits.keys():
+                    new_hits_by_ip[k[2]].add(k)
+                    if k[0] == "ZONE":
+                        new_zone_attackers[k[1]].add(k[2])
+
+                _hits_by_ip.clear()
+                _hits_by_ip.update(new_hits_by_ip)
+                _zone_attackers.clear()
+                _zone_attackers.update(new_zone_attackers)
+
+            # === 清理 _active_threats（锁内扫，锁外不用算） ===
+            with _active_threats_lock:
+                victims = []
+                for t_ip, info in _active_threats.items():
+                    if info["level"] != "critical" and now - info["last_seen"] > apt_window:
+                        victims.append(t_ip)
+                    elif now - info["last_seen"] > 1800:
+                        victims.append(t_ip)
+                for v_ip in victims:
+                    del _active_threats[v_ip]
+
+            # === 清理 _alerted_set ===
+            with _alerted_lock:
+                for ak in list(_alerted_set.keys()):
+                    if ak[1][0] == "ZONE":
+                        w_sec = danger_cfg_snapshot.get("zones", {}).get(ak[1][1], {}).get("window_sec", 60)
+                    else:
+                        w_sec = danger_cfg_snapshot.get("default_policy", {}).get("window_sec", 60)
+                    
+                    if now - _alerted_set[ak] > w_sec:
+                        del _alerted_set[ak]
+                
+                if len(_alerted_set) > 100000:
+                    sorted_keys = sorted(_alerted_set.keys(), key=lambda k: _alerted_set[k])
+                    for k in sorted_keys[:50000]:
+                        del _alerted_set[k]
+                    audit("ALERTED_SET_FORCED_EVICTION executed")
+
+            # === 清理 _ip_recent_paths ===
             with _ip_paths_lock:
                 for ip in list(_ip_recent_paths.keys()):
                     if not _ip_recent_paths[ip]:
                         del _ip_recent_paths[ip]
-                    else:
-                        last_t = _ip_recent_paths[ip][-1][0]
-                        if now - last_t > max_window + 300:
-                            del _ip_recent_paths[ip]
+                    elif now - _ip_recent_paths[ip][-1][0] > max_window + 300:
+                        del _ip_recent_paths[ip]
 
-            with _active_threats_lock:
-                for t_ip in list(_active_threats.keys()):
-                    if now - _active_threats[t_ip]["last_seen"] > 300:
-                        del _active_threats[t_ip]
-                        
+            # === 清理 _cluster_events ===
             with _cluster_lock:
                 for zone in list(_cluster_events.keys()):
-                    if now - _cluster_events[zone]["time"] > 300:
+                    if now - _cluster_events[zone]["time"] > apt_window:
                         del _cluster_events[zone]
+
         except Exception as e:
             audit(f"CLEAN_ERR {repr(e)}")
             
@@ -471,7 +545,7 @@ def check_rate_limit(ip, key):
         _rate_hits_key[key].append(now)
         return True, ""
 
-# ==================== 配置热重载（Event） ====================
+# ==================== 配置热重载 ====================
 
 def _reload_keys():
     global _keys_mtime, _keys_cache, _keys_dict
@@ -527,12 +601,41 @@ def _reload_danger():
                 if not isinstance(data, dict):
                     data = dict(DEFAULT_DANGER_CFG)
                 
+                def_safe = DEFAULT_DANGER_CFG["default_policy"]
+                dp_raw = data.get("default_policy", def_safe)
+                default_policy = {
+                    "threshold": max(1, int(dp_raw.get("threshold", 10))) if str(dp_raw.get("threshold", "")).isdigit() else 10,
+                    "window_sec": max(1, int(dp_raw.get("window_sec", 60))) if str(dp_raw.get("window_sec", "")).isdigit() else 60,
+                    "apt_detection": bool(dp_raw.get("apt_detection", False)),
+                    "allow_shutdown": bool(dp_raw.get("allow_shutdown", False))
+                }
+
+                prio_map = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+                zones = {}
+                for zone, p_raw in data.get("zones", {}).items():
+                    if not isinstance(p_raw, dict):
+                        continue
+                    try:
+                        prio_str = str(p_raw.get("priority", "low")).lower()
+                        zones[zone] = {
+                            "threshold": max(1, int(p_raw.get("threshold", 10))),
+                            "window_sec": max(1, int(p_raw.get("window_sec", 60))),
+                            "share_hits": bool(p_raw.get("share_hits", False)),
+                            "apt_detection": bool(p_raw.get("apt_detection", False)),
+                            "allow_shutdown": bool(p_raw.get("allow_shutdown", False)),
+                            "apt_threshold_minutes": int(p_raw.get("apt_threshold_minutes", 10)),
+                            "priority_num": prio_map.get(prio_str, 0)
+                        }
+                    except (ValueError, TypeError):
+                        audit(f"DANGER_CONFIG_ERR zone={zone} skipped")
+
                 merged = {
                     "enabled": bool(data.get("enabled", True)),
                     "split_log": bool(data.get("split_log", True)),
                     "ip_whitelist": list(data.get("ip_whitelist", ["127.0.0.1", "::1"])),
-                    "default_policy": data.get("default_policy", {"threshold": 10, "window_sec": 60, "apt_detection": False, "allow_shutdown": False}),
-                    "zones": data.get("zones", {})
+                    "default_policy": default_policy,
+                    "zones": zones,
+                    "active_threats_max": max(1000, int(data.get("active_threats_max", 50000)))
                 }
                 with _danger_cfg_lock:
                     _danger_cfg = merged
@@ -550,24 +653,370 @@ def _wait_for_tick():
         _config_tick.wait()
         _config_tick.clear()
         
-        # 尝试获取锁，获取不到说明有什么东西炸了
         if not _config_reloading.acquire(blocking=False):
-            # 直接丢弃这秒的节拍，防止内存溢出和线程积压
             continue
             
-        # 获取到锁就打包任务丢进线程池
         def _task_wrapper():
             try:
                 _reload_keys()
                 _reload_access()
                 _reload_danger()
             finally:
-                # 无论成功失败，必须释放锁，否则会因为一次失败导致下一次重载永远不会来临
                 _config_reloading.release()
         
         _config_executor.submit(_task_wrapper)
 
-# [ACCESS-CTRL] 路径匹配：精确 > 单段通配 > default
+# ==================== 危险感知辅助函数 ====================
+
+def _rotate_latest_log_safe():
+    """统一的 LATEST_LOG 轮转逻辑，防止并发 rename 丢文件"""
+    with _rotate_lock:
+        if not os.path.exists(LATEST_LOG):
+            return
+        if os.path.getsize(LATEST_LOG) <= 10 * 1024 * 1024:
+            return
+        try:
+            archive_name = f"history_{time.strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(2)}.log"
+            archive_path = os.path.join(LOG_DIR, archive_name)
+            os.rename(LATEST_LOG, archive_path)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            print(f"[_rotate_latest_log_safe] {repr(e)}")
+
+def _write_danger_log_safe(line_obj):
+    """异步、线程安全、原子、带时间戳的危险日志写入"""
+    def _write():
+        try:
+            if not os.path.exists(LOG_DIR):
+                os.makedirs(LOG_DIR, exist_ok=True)
+            record = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), **line_obj}
+            data = json.dumps(record, ensure_ascii=False)
+            with _danger_log_lock:
+                with open(DANGER_LOG, "a", encoding="utf-8") as f:
+                    f.write(data + "\n")
+        except Exception as e:
+            audit(f"DANGER_LOG_WRITE_ERR {repr(e)}")
+
+    try:
+        _danger_log_pool.submit(_write)
+    except RuntimeError:
+        _write()
+
+def _write_danger_to_latest_safe(line_obj):
+    """A3 修复：split_log=False 时写入 LATEST_LOG，但不抢 audit() 的 _log_lock"""
+    def _write():
+        try:
+            if not os.path.exists(LOG_DIR):
+                os.makedirs(LOG_DIR, exist_ok=True)
+            record = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), **line_obj}
+            data = json.dumps(record, ensure_ascii=False)
+            with _danger_log_lock:
+                _rotate_latest_log_safe()
+                with open(LATEST_LOG, "a", encoding="utf-8") as f:
+                    f.write(f"[{record['ts']}] DANGER_PROBE {data}\n")
+        except Exception as e:
+            audit(f"DANGER_LATEST_WRITE_ERR {repr(e)}")
+
+    try:
+        _danger_log_pool.submit(_write)
+    except RuntimeError:
+        _write()
+
+def _match_zone(path, zones_dict):
+    matched = None
+    matched_key = ""
+    best_score = (-1, -1, -1, -1)
+
+    for zone, policy in zones_dict.items():
+        pattern = "^" + re.escape(zone).replace(r"\*", "[^/]+") + "$"
+        if not re.match(pattern, path):
+            continue
+
+        prio = policy.get("priority_num", 0)
+        if not isinstance(prio, int):
+            prio = 0
+        literal_len = len(zone.replace("*", ""))
+        wildcard_count = zone.count("*")
+        score = (prio, literal_len, -wildcard_count, len(zone))
+        if score > best_score:
+            best_score = score
+            matched = policy
+            matched_key = zone
+
+    return matched_key, matched
+
+def _save_global_state():
+    with _global_threat_lock:
+        snapshot = dict(_global_threat_state)
+
+    tmp_path = GLOBAL_STATE_PATH + ".tmp"
+    try:
+        snapshot["v"] = 1
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(snapshot, f, ensure_ascii=False)
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, GLOBAL_STATE_PATH)
+    except Exception as e:
+        audit(f"GLOBAL_STATE_SAVE_ERR {repr(e)}")
+        if os.path.exists(tmp_path):
+            try: os.remove(tmp_path)
+            except: pass
+
+def _load_global_state():
+    if not os.path.exists(GLOBAL_STATE_PATH):
+        return
+    try:
+        with open(GLOBAL_STATE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("not a dict")
+
+        now = time.time()
+        last_reset = data.get("last_reset", 0)
+        try:
+            last_reset = float(last_reset)
+        except (ValueError, TypeError):
+            last_reset = 0
+
+        if now - last_reset > 600:
+            data = {"high_count": 0, "critical_count": 0, "last_reset": now}
+        else:
+            data = {
+                "high_count": max(0, int(data.get("high_count", 0))),
+                "critical_count": max(0, int(data.get("critical_count", 0))),
+                "last_reset": last_reset
+            }
+
+        with _global_threat_lock:
+            _global_threat_state.clear()
+            _global_threat_state.update(data)
+
+        audit(f"GLOBAL_STATE_LOADED high={data['high_count']} critical={data['critical_count']}")
+    except Exception as e:
+        audit(f"GLOBAL_STATE_LOAD_ERR {repr(e)}")
+
+# ==================== 危险感知判定与记录 ====================
+
+def _calculate_threat_level(ip, path, zone_key, window_sec, current_count, cfg):
+    now = time.time()
+    total_hits = 0
+    with _danger_lock:
+        for k in _hits_by_ip.get(ip, ()):
+            k_window = window_sec
+            if k[0] == "ZONE":
+                zone_cfg = cfg.get("zones", {}).get(k[1], {})
+                k_window = max(1, int(zone_cfg.get("window_sec", window_sec)))
+            elif k[0] == "PATH":
+                k_window = max(1, int(cfg.get("default_policy", {}).get("window_sec", window_sec)))
+            
+            valid_hits = [t for t in _danger_hits.get(k, ()) if t > now - k_window]
+            total_hits += len(valid_hits)
+
+    effective_hits = max(current_count, total_hits)
+
+    path_count = 0
+    with _ip_paths_lock:
+        if ip in _ip_recent_paths:
+            recent = set(p for t, p in _ip_recent_paths[ip] if t > now - window_sec)
+            path_count = len(recent)
+
+    if effective_hits > 30 or path_count > 5:
+        level = "high"
+    elif effective_hits > 10 or path_count > 2:
+        level = "medium"
+    else:
+        level = "low"
+
+    attacker_count = 1
+    if zone_key:
+        with _danger_lock:
+            attackers = set()
+            for a_ip in _zone_attackers.get(zone_key, ()):
+                zk = ("ZONE", zone_key, a_ip)
+                if any(t > now - window_sec for t in _danger_hits.get(zk, ())):
+                    attackers.add(a_ip)
+            attacker_count = len(attackers)
+        if attacker_count >= 5:
+            level = "high"
+
+    return level, attacker_count
+
+def _update_hits(ip, path, matched_zone_key, policy, is_zone_hit, now):
+    if is_zone_hit and policy.get("share_hits", False):
+        count_key = ("ZONE", matched_zone_key, ip)
+    else:
+        count_key = ("PATH", path, ip)
+    
+    threshold = max(1, int(policy.get("threshold", 10)))
+    window = max(1, int(policy.get("window_sec", 60)))
+    
+    with _danger_lock:
+        hits = [t for t in _danger_hits.get(count_key, ()) if t > now - window]
+        hits.append(now)
+        _danger_hits[count_key] = hits
+        _hits_by_ip[ip].add(count_key)
+        if count_key[0] == "ZONE":
+            _zone_attackers[count_key[1]].add(ip)
+        count = len(hits)
+    
+    return count_key, count, threshold, window
+
+def _should_alert(ip, count_key, count, threshold, now):
+    alert_key = (ip, count_key)
+    with _alerted_lock:
+        if count >= threshold and alert_key not in _alerted_set:
+            _alerted_set[alert_key] = now
+            if len(_alerted_set) > 50000 and len(_alerted_set) % 1000 == 0:
+                audit(f"ALERTED_SET_WARNING size={len(_alerted_set)}")
+            return True
+    return False
+
+def _compute_prio(ip, path, matched_zone_key, window, apt_enabled, policy, now, current_count, cfg):
+    current_prio, attacker_count = _calculate_threat_level(ip, path, matched_zone_key, window, current_count, cfg)
+    is_cluster = attacker_count > 1
+    is_sustained = False
+    event_id = ""
+    cluster_event_id = ""
+
+    if apt_enabled:
+        apt_window = max(60, int(policy.get("apt_threshold_minutes", 10)) * 60)
+
+        if is_cluster:
+            current_prio = "critical"
+            with _cluster_lock:
+                if matched_zone_key not in _cluster_events or now - _cluster_events[matched_zone_key]["time"] > 300:
+                    _cluster_events[matched_zone_key] = {
+                        "id": f"EVT-CLUSTER-{secrets.token_hex(4)}",
+                        "time": now
+                    }
+                cluster_event_id = _cluster_events[matched_zone_key]["id"]
+
+        levels = ["low", "medium", "high", "critical"]
+        with _active_threats_lock:
+            threat_info = _active_threats.get(ip)
+            old_level = threat_info["level"] if threat_info and threat_info["level"] in levels else "low"
+
+            if threat_info and (now - threat_info["last_seen"] < apt_window):
+                is_sustained = True
+                event_id = threat_info["event_id"]
+                old_idx = levels.index(old_level)
+                new_idx = min(3, old_idx + 1)
+                current_prio = levels[new_idx]
+            else:
+                if levels.index(current_prio) < levels.index(old_level):
+                    current_prio = old_level
+
+        if is_cluster:
+            current_prio = "critical"
+            if not is_sustained:
+                event_id = cluster_event_id
+    else:
+        event_id = f"EVT-{secrets.token_hex(4)}"
+
+    return current_prio, attacker_count, is_sustained, is_cluster, event_id
+
+def _update_active_threat(ip, path, current_prio, event_id, now):
+    # 锁序修复：先在 _danger_cfg_lock 内拿快照，出锁
+    with _danger_cfg_lock:
+        max_limit = _danger_cfg.get("active_threats_max", 50000)
+    
+    with _active_threats_lock:
+        _active_threats[ip] = {
+            "event_id": event_id,
+            "last_seen": now,
+            "level": current_prio,
+            "last_path": path
+        }
+        if len(_active_threats) > max_limit * 1.2:
+            victims = [k for k, v in _active_threats.items() if v["level"] != "critical"][:int(max_limit * 0.2)]
+            for v_ip in victims:
+                del _active_threats[v_ip]
+            audit(f"ACTIVE_THREAT_EMERGENCY_EVICTED count={len(victims)}")
+
+def _evaluate_global_shutdown(current_prio, allow_shutdown, now):
+    global _last_global_save_time
+    force_shutdown = False
+    if allow_shutdown:
+        with _global_threat_lock:
+            if now - _global_threat_state["last_reset"] > 600:
+                _global_threat_state["high_count"] = 0
+                _global_threat_state["critical_count"] = 0
+                _global_threat_state["last_reset"] = now
+
+            if current_prio in ("high", "critical"):
+                _global_threat_state[f"{current_prio}_count"] += 1
+
+            if _global_threat_state["high_count"] > 20 or _global_threat_state["critical_count"] > 5:
+                force_shutdown = True
+
+        if force_shutdown:
+            with _global_save_lock:
+                if now - _last_global_save_time > 5:
+                    _last_global_save_time = now
+                    _save_global_state()
+
+    return force_shutdown
+
+def _emit_danger_log(ip, path, count_key, count, current_prio, is_sustained, is_cluster, 
+                     attacker_count, event_id, allow_shutdown, force_shutdown, window, now, cfg):
+    with _ip_paths_lock:
+        targets = list(set(p for t, p in _ip_recent_paths[ip] if t > now - window))
+
+    line_obj = {
+        "node_id": NODE_ID,
+        "evt": event_id,
+        "prio": current_prio,
+        "sustained": is_sustained,
+        "cluster": attacker_count,
+        "ip": ip,
+        "scope_type": count_key[0],
+        "scope_key": count_key[1],
+        "count": count,
+        "targets": targets,
+        "allow_shutdown": allow_shutdown,
+        "escalated": force_shutdown
+    }
+
+    if cfg.get("split_log", True):
+        _write_danger_log_safe(line_obj)
+    else:
+        _write_danger_to_latest_safe(line_obj)
+
+def record_danger(path, ip):
+    with _danger_cfg_lock:
+        cfg = dict(_danger_cfg)
+    if not cfg.get("enabled", True):
+        return
+    if ip in cfg.get("ip_whitelist", []):
+        return
+
+    now = time.time()
+    with _ip_paths_lock:
+        _ip_recent_paths[ip].append((now, path))
+
+    matched_zone_key, matched_zone = _match_zone(path, cfg.get("zones", {}))
+    policy = matched_zone if matched_zone else cfg.get("default_policy", {})
+    is_zone_hit = True if matched_zone else False
+
+    count_key, count, threshold, window = _update_hits(ip, path, matched_zone_key, policy, is_zone_hit, now)
+
+    if not _should_alert(ip, count_key, count, threshold, now):
+        return
+
+    current_prio, attacker_count, is_sustained, is_cluster, event_id = _compute_prio(
+        ip, path, matched_zone_key, window, policy.get("apt_detection", False), policy, now, count, cfg
+    )
+
+    _update_active_threat(ip, path, current_prio, event_id, now)
+    force_shutdown = _evaluate_global_shutdown(current_prio, policy.get("allow_shutdown", False), now)
+
+    _emit_danger_log(
+        ip, path, count_key, count, current_prio, is_sustained, is_cluster,
+        attacker_count, event_id, policy.get("allow_shutdown", False), force_shutdown, window, now, cfg
+    )
+
+# ==================== 路径匹配与全局状态持久化 ====================
 def _check_access(path):
     with _access_lock:
         routes = dict(_access_rules.get("routes", {}))
@@ -580,178 +1029,6 @@ def _check_access(path):
             if re.match(pattern, path):
                 return val
     return default
-
-# [ACCESS-CTRL] 危险感知：滑动窗口计数，达阈值告警
-def _write_danger_log(line):
-    with _log_lock:
-        try:
-            if not os.path.exists(LOG_DIR):
-                os.makedirs(LOG_DIR)
-            with open(DANGER_LOG, "a", encoding="utf-8") as f:
-                f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {line}\n")
-        except Exception:
-            pass
-
-def _calculate_threat_level(ip, path, zone_key, window_sec):
-    now = time.time()
-    
-    total_hits = 0
-    with _danger_lock:
-        for k, v in _danger_hits.items():
-            if k.endswith(f"|{ip}"):
-                total_hits += len([t for t in v if t > now - window_sec])
-                
-    path_count = 0
-    with _ip_paths_lock:
-        if ip in _ip_recent_paths:
-            recent_paths = set(p for t, p in _ip_recent_paths[ip] if t > now - window_sec)
-            path_count = len(recent_paths)
-
-    if total_hits > 30 or path_count > 5:
-        level = "high"
-    elif total_hits > 10 or path_count > 2:
-        level = "medium"
-    else:
-        level = "low"
-
-    attacker_count = 1
-    if zone_key:
-        with _danger_lock:
-            attackers = set()
-            for k, hits in _danger_hits.items():
-                if k.startswith(f"ZONE|{zone_key}|"):
-                    if any(t > now - 60 for t in hits):
-                        attackers.add(k.split("|")[-1])
-            attacker_count = len(attackers)
-            
-        if attacker_count >= 5:
-            level = "high"
-                
-    return level, attacker_count
-
-def record_danger(path, ip):
-    with _danger_cfg_lock:
-        cfg = dict(_danger_cfg)
-    if not cfg.get("enabled", True):
-        return
-        
-    # 白名单
-    if ip in cfg.get("ip_whitelist", []):
-        return
-
-    now = time.time()
-    with _ip_paths_lock:
-        _ip_recent_paths[ip].append((now, path))
-
-    # 匹配 Zone
-    matched_zone_key = ""
-    matched_zone = None
-    for zone, policy in cfg.get("zones", {}).items():
-        pattern = "^" + re.escape(zone).replace(r"\*", "[^/]+") + "$"
-        if re.match(pattern, path):
-            matched_zone = policy
-            matched_zone_key = zone
-            break
-
-    # 确定计数规则
-    if matched_zone:
-        policy = matched_zone
-        count_key = f"ZONE|{matched_zone_key}|{ip}" if policy.get("share_hits", False) else f"PATH|{path}|{ip}"
-    else:
-        policy = cfg.get("default_policy", {})
-        count_key = f"PATH|{path}|{ip}"
-
-    threshold = policy.get("threshold", 10)
-    window = policy.get("window_sec", 60)
-    
-    # 滑动窗口记录
-    with _danger_lock:
-        hits = [t for t in _danger_hits.get(count_key, []) if t > now - window]
-        hits.append(now)
-        _danger_hits[count_key] = hits
-        count = len(hits)
-
-    # 触发阈值
-    if count == threshold:
-        current_prio, attacker_count = _calculate_threat_level(ip, path, matched_zone_key, window)
-        
-        event_id = ""
-        is_sustained = False
-        is_cluster = attacker_count > 1
-        
-        apt_enabled = policy.get("apt_detection", False)
-        
-        if apt_enabled:
-            apt_window = policy.get("apt_threshold_minutes", 10) * 60
-            
-            if is_cluster:
-                current_prio = "critical"
-                # [ACCESS-CTRL] 让我看看这一车面包人从哪来的
-                with _cluster_lock:
-                    if matched_zone_key not in _cluster_events or now - _cluster_events[matched_zone_key]["time"] > 300:
-                        _cluster_events[matched_zone_key] = {
-                            "id": f"EVT-CLUSTER-{secrets.token_hex(4)}",
-                            "time": now
-                        }
-                    cluster_event_id = _cluster_events[matched_zone_key]["id"]
-            else:
-                cluster_event_id = ""
-            
-            with _active_threats_lock:
-                threat_info = _active_threats.get(ip)
-                if threat_info:
-                    time_since_last = now - threat_info["last_seen"]
-                    if time_since_last < apt_window:
-                        is_sustained = True
-                        event_id = threat_info["event_id"]
-                        if threat_info["level"] == "low": current_prio = "medium"
-                        elif threat_info["level"] == "medium": current_prio = "high"
-                        elif threat_info["level"] == "high": current_prio = "critical"
-                
-                if not is_sustained:
-                    event_id = cluster_event_id if is_cluster else f"EVT-{secrets.token_hex(4)}"
-                
-                _active_threats[ip] = {"event_id": event_id, "last_seen": now, "level": current_prio}
-        else:
-            event_id = f"EVT-{secrets.token_hex(4)}"
-
-        # 全局频率与熔断评估
-        force_shutdown = False
-        allow_shutdown = policy.get("allow_shutdown", False)
-        
-        if allow_shutdown:
-            with _global_threat_lock:
-                if now - _global_threat_state["last_reset"] > 600:
-                    _global_threat_state["high_count"] = 0
-                    _global_threat_state["critical_count"] = 0
-                    _global_threat_state["last_reset"] = now
-                
-                if current_prio in ("high", "critical"):
-                    _global_threat_state[f"{current_prio}_count"] += 1
-                    
-                if _global_threat_state["high_count"] > 20 or _global_threat_state["critical_count"] > 5:
-                    force_shutdown = True
-
-        #情报日志
-        with _ip_paths_lock:
-            targets = list(set(p for t, p in _ip_recent_paths[ip] if t > now - window))
-            
-        sustained_flag = "[SUSTAINED] " if is_sustained else ""
-        cluster_flag = f"[CLUSTER-{attacker_count}IP] " if is_cluster else ""
-        
-        shutdown_field = f"allow_shutdown={'true' if allow_shutdown else 'false'}"
-        escalated_field = "escalated=true" if force_shutdown else "escalated=false"
-        
-        line = (
-            f"DANGER_PROBE id={event_id} prio={current_prio} "
-            f"{sustained_flag}{cluster_flag}ip={ip} scope={count_key} count={count} "
-            f"targets={targets} {shutdown_field} {escalated_field}"
-        )
-        
-        if cfg.get("split_log", True):
-            _write_danger_log(line)
-        else:
-            audit(line)
 
 def load_keys():
     with _keys_lock: 
@@ -808,16 +1085,12 @@ def audit(msg):
     safe_msg = str(msg).replace('\n', ' ').replace('\r', '')
     with _log_lock:
         try:
-            # 加上颜色前缀，终端里看起来会非常清爽
             print(f"\033[90m[{time.strftime('%Y-%m-%d %H:%M:%S')}]\033[0m {safe_msg}")
             
             if not os.path.exists(LOG_DIR):
                 os.makedirs(LOG_DIR)
                 
-            if os.path.exists(LATEST_LOG) and os.path.getsize(LATEST_LOG) > 10 * 1024 * 1024:
-                archive_name = f"history_{time.strftime('%Y%m%d_%H%M%S')}.log"
-                archive_path = os.path.join(LOG_DIR, archive_name)
-                os.rename(LATEST_LOG, archive_path)
+            _rotate_latest_log_safe()
                 
             with open(LATEST_LOG, "a", encoding="utf-8") as f:
                 f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {safe_msg}\n")
@@ -928,9 +1201,12 @@ Content-Type: text/html; charset="utf-8"
                 save_keys({"keys": []}, deleted_ids=[key_id])
                 audit(f"TEMP_KEY_REVOKED id={key_id} reason=test_completed")
         
-        semaphore.release()
+        try:
+            semaphore.release()
+        except Exception:
+            pass
 
-# ==================== 路由控制器 ====================
+# ==================== 主处理类 ====================
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *args): pass
 
@@ -1517,11 +1793,21 @@ def _admin_system_info(h, ctx):
     tmpl_count = len([d for d in os.listdir(HTML_DIR) if os.path.isdir(os.path.join(HTML_DIR, d))]) if os.path.exists(HTML_DIR) else 0
     acc_count = len(CFG.get("accounts", {}))
 
+    # 运维指标外露
+    danger_metrics = {
+        "hits_keys": len(_danger_hits),
+        "active_threats": len(_active_threats),
+        "alerted_set_size": len(_alerted_set),
+        "global_high": _global_threat_state.get("high_count", 0),
+        "global_critical": _global_threat_state.get("critical_count", 0)
+    }
+
     return h._resp(200, {
         "ok": True, "uptime": f"{hours}h {minutes}m {seconds}s", "running_tasks": running_tasks,
         "total_success": total_success, "total_fail": total_fail, "total_reject": total_reject,
         "reject_1m": recent_rejects, "template_count": tmpl_count, "account_count": acc_count,
-        "mem_used_mb": mem_used_mb, "mem_total_mb": mem_total_mb
+        "mem_used_mb": mem_used_mb, "mem_total_mb": mem_total_mb,
+        "danger_metrics": danger_metrics
     })
 
 def _admin_logs(h, ctx):
@@ -1639,6 +1925,12 @@ def graceful_shutdown(signum, frame):
     # 启动子线程去关网络端口，因为 srv.shutdown() 是阻塞的
     threading.Thread(target=_do_shutdown, daemon=True).start()
     
+    # 如果全局状态持久化线程还在，给它 2 秒收尾
+    global _persist_thread
+    if "_persist_thread" in globals() and _persist_thread and _persist_thread.is_alive():
+        _persist_thread.join(timeout=2.0)
+        print("[*] 已等待全局状态落盘")
+        
     running_tasks = 0
     for i in range(3, 0, -1):
         time.sleep(1)
@@ -1654,12 +1946,23 @@ def graceful_shutdown(signum, frame):
                      
     print("[+] 服务器已安全关闭，进程退出")
     sys.exit(0)
-    
-    
+
 signal.signal(signal.SIGINT, graceful_shutdown)
 signal.signal(signal.SIGTERM, graceful_shutdown)
 
 if __name__ == "__main__":
+    # 加载全局威胁状态
+    _load_global_state()
+    
+    # 启动持久化线程
+    def _persist_global_state():
+        while True:
+            time.sleep(10)
+            _save_global_state()
+            
+    _persist_thread = threading.Thread(target=_persist_global_state, daemon=True)
+    _persist_thread.start()
+
     threading.Thread(target=_heartbeat, daemon=True).start()
     threading.Thread(target=_wait_for_tick, daemon=True).start()
 
