@@ -259,7 +259,7 @@ def init_wizard():
             if "@" in helo_host or "." not in helo_host:
                 helo_host = "localhost"
             ignore_ssl = input("   - 是否忽略 SMTP SSL 证书校验? (y/n) [默认 n]: ").strip().lower() == "y"
-            >
+            
         config = {
             "listen_port": listen_port,
             "https_port": https_port,
