@@ -1177,7 +1177,7 @@ Content-Type: text/html; charset="utf-8"
 {html_content}
 """.replace("\n", "\r\n")
 
-                ignore_ssl = account_cfg.get("ignore_ssl", False)
+        ignore_ssl = account_cfg.get("ignore_ssl", False)
         ctx = ssl._create_unverified_context() if ignore_ssl else ssl.create_default_context()
         
         smtp_mode = account_cfg.get("smtp_mode", "ssl")
