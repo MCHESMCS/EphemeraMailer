@@ -30,6 +30,7 @@ KEYS_PATH = os.path.join(BASE_DIR, "keys.json")
 HTML_DIR = os.path.join(BASE_DIR, "html")
 WEB_DIR = os.path.join(BASE_DIR, "web")
 ASSETS_DIR = os.path.join(BASE_DIR, "assets")
+STATIC_DIR = os.path.join(BASE_DIR, "static")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 LATEST_LOG = os.path.join(LOG_DIR, "latest.log")
 DANGER_LOG = os.path.join(LOG_DIR, "danger.log")
@@ -52,6 +53,7 @@ _danger_hits = {}
 # 倒排索引：ip -> set of keys（加速 total_hits 计算）
 _hits_by_ip = defaultdict(set)
 _danger_lock = threading.RLock()
+_zone_attackers = defaultdict(set)
 
 # IP 最近访问路径
 _ip_recent_paths = defaultdict(lambda: deque(maxlen=20))
@@ -376,6 +378,7 @@ def ensure_configs():
         print("[*] 已自动生成危险感知配置 access-control/danger.json")
     if not os.path.exists(WEB_DIR): os.makedirs(WEB_DIR)
     if not os.path.exists(ASSETS_DIR): os.makedirs(ASSETS_DIR)
+    if not os.path.exists(STATIC_DIR): os.makedirs(STATIC_DIR)
     
     v1_dir = os.path.join(HTML_DIR, "v1")
     if not os.path.exists(v1_dir) or not os.listdir(HTML_DIR):
@@ -1350,12 +1353,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return
 
             # ==================== 路由分发 ====================
+
             if path == "/web" and method == "GET":
                 return self._handle_web_page()
             if path == admin_path and method == "GET":
                 return self._handle_admin_page()
             if path.startswith("/assets/"):
-                return self._handle_static_assets(path)
+                return self._handle_static_assets(path, "assets")
+            if path.startswith("/static/"):
+                return self._handle_static_assets(path, "static")
             if path == "/api/templates" and method in ("GET", "POST"):
                 return self._handle_templates_list()
 
@@ -1388,51 +1394,72 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _handle_web_page(self):
         web_index = os.path.join(WEB_DIR, "index.html")
-        if os.path.exists(web_index):
-            with open(web_index, "r", encoding="utf-8") as f: 
-                html = f.read()
-            bg_flag = "true" if CFG.get("enable_custom_background", False) else "false"
-            html = html.replace("{{ENABLE_BG}}", bg_flag)
-            return self._html(html)
-        else: 
+        if not os.path.exists(web_index):
             return self._html("<h1>Web page not found</h1>")
 
+        with open(web_index, "r", encoding="utf-8") as f: 
+            content = f.read()
+            
+        bg_flag = "true" if CFG.get("enable_custom_background", False) else "false"
+        content = content.replace("{{ENABLE_BG}}", bg_flag)
+        
+        with _access_lock:
+            access_snapshot = dict(_access_rules.get("routes", {}))
+        access_json = json.dumps(access_snapshot, ensure_ascii=False).replace("<", "\\u003c")
+        content = content.replace("{{ACCESS_MAP}}", access_json)
+        
+        return self._html(content)
+        
     def _handle_admin_page(self):
         admin_file = os.path.join(WEB_DIR, "admin.html")
-        if os.path.exists(admin_file):
-            with open(admin_file, "r", encoding="utf-8") as f: 
-                html = f.read()
-            bg_flag = "true" if CFG.get("enable_custom_background", False) else "false"
-            html = html.replace("{{ENABLE_BG}}", bg_flag)
-            
-            with _access_lock:
-                access_snapshot = dict(_access_rules.get("routes", {}))
-            access_json = json.dumps(access_snapshot, ensure_ascii=False).replace("<", "\\u003c")
-            html = html.replace("{{ACCESS_MAP}}", access_json)
-            
-            return self._html(html)
-        else: 
+        if not os.path.exists(admin_file):
             return self._html("<h1>Admin page not found</h1>")
 
-    def _handle_static_assets(self, path):
-        file_name = path.split("/assets/")[-1]
-        if not re.match(r"^[a-zA-Z0-9_\-\.]+$", file_name):
+        with open(admin_file, "r", encoding="utf-8") as f: 
+            content = f.read()
+            
+        bg_flag = "true" if CFG.get("enable_custom_background", False) else "false"
+        content = content.replace("{{ENABLE_BG}}", bg_flag)
+        
+        with _access_lock:
+            access_snapshot = dict(_access_rules.get("routes", {}))
+        access_json = json.dumps(access_snapshot, ensure_ascii=False).replace("<", "\\u003c")
+        content = content.replace("{{ACCESS_MAP}}", access_json)
+        
+        return self._html(content)
+
+    def _handle_static_assets(self, path, prefix):
+        file_name = path.split(f"/{prefix}/")[-1]
+        # 允许子目录但禁止路径穿越
+        if not re.match(r"^[a-zA-Z0-9_\-\./]+$", file_name) or ".." in file_name:
             return self._resp(400, {"ok": False, "error": "invalid filename"})
         
-        file_path = os.path.join(ASSETS_DIR, file_name)
-        if not os.path.exists(file_path):
-            return self._resp(404, {"ok": False, "error": "asset not found"})
+        base_dir = ASSETS_DIR if prefix == "assets" else STATIC_DIR
+        file_path = os.path.join(base_dir, file_name)
+        
+        # 二次防穿越：realpath 校验(谁给点三次防穿越的东西 我不想系统密码漏给人家)
+        real_path = os.path.realpath(file_path)
+        if not real_path.startswith(os.path.realpath(base_dir) + os.sep):
+            return self._resp(403, {"ok": False, "error": "forbidden"})
+        
+        if not os.path.exists(file_path) or not os.path.isfile(file_path):
+            return self._resp(404, {"ok": False, "error": "not found"})
         
         mime_type, _ = mimetypes.guess_type(file_path)
         with open(file_path, "rb") as f:
-            img_data = f.read()
-            
+            data = f.read()
+        
         self.send_response(200)
         self.send_header("Content-Type", mime_type or "application/octet-stream")
-        self.send_header("Content-Length", str(len(img_data)))
-        self.send_header("Cache-Control", "public, max-age=86400")
+        self.send_header("Content-Length", str(len(data)))
+        
+        # 开发阶段用缓存怎么死的都不知道
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
+        
         self.end_headers()
-        self.wfile.write(img_data)
+        self.wfile.write(data)
 
     def _handle_templates_list(self):
         templates = []
