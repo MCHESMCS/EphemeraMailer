@@ -1256,32 +1256,38 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+        
+    def _precheck_body(self):
+        # 不支持喵，发就掐死喵
+        if self.headers.get("Transfer-Encoding"):
+            self.close_connection = True
+            return False
+
+        cl_values = self.headers.get_all("Content-Length")
+        if cl_values and len(cl_values) > 1:
+            self.close_connection = True
+            return False
+
+        try:
+            raw_length = self.headers.get("Content-Length", "0")
+            length = int(raw_length)
+            if length < 0 or length > 1024 * 1024:
+                self.close_connection = True
+                return False
+        except ValueError:
+            self.close_connection = True
+            return False
+
+        return True
 
     def _params(self, parsed):
         d = {}
         for k, v in urllib.parse.parse_qs(parsed.query, keep_blank_values=True).items():
             d[k] = v[0]
-            
-        if self.headers.get("Transfer-Encoding") and self.headers.get("Content-Length"):
-            self.close_connection = True
-            return None
 
-        if self.headers.get("Transfer-Encoding"):
-            self.close_connection = True
-            return None
-            
-        cl_values = self.headers.get_all("Content-Length")
-        if cl_values and len(cl_values) > 1:
-            self.close_connection = True
-            return None
-            
         try:
             raw_length = self.headers.get("Content-Length", "0")
             length = int(raw_length)
-            
-            if length < 0 or length > 1024 * 1024:
-                self.close_connection = True
-                return None
             
             if length > 0:
                 raw = self.rfile.read(length)
@@ -1305,9 +1311,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     except Exception:
                         pass
 
-        except ValueError:
-            self.close_connection = True
-            return None
         except Exception as e:
             audit(f"PARAMS_LEN_ERR {repr(e)}")
             self.close_connection = True
@@ -1364,14 +1367,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     self._resp(405, {"ok": False, "error": "GET method not allowed"})
                     return
                     
+            # ==================== 参数前置安检 ====================
+            if not self._precheck_body():
+                record_reject()
+                self._resp(413, {"ok": False, "error": "Payload Too Large or Invalid"})
+                return
+
             # ==================== 参数提取 ====================
             p = self._params(parsed)
             if p is None:
                 record_reject()
                 self.close_connection = True
-                self._resp(413, {"ok": False, "error": "Payload Too Large"})
                 return
-
+                
             # ==================== 路由分发 ====================
 
             if path == "/web" and method == "GET":
