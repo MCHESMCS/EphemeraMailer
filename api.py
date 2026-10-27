@@ -101,6 +101,28 @@ _danger_log_lock = threading.Lock()
 # 线程池：危险日志独立异步池（max_workers=2）
 _danger_log_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="DangerLog")
 
+# ==================== 流控与精准限流全局状态 ====================
+RATE_LIMIT_CFG_PATH = os.path.join(ACCESS_DIR, "rate_limit.json")
+THREAD_BASE_PATH = os.path.join(ACCESS_DIR, "thread_base.json")
+
+_rate_limit_mtime = 0
+_rate_limit_lock = threading.RLock()
+
+# 防用户删配置炸飞老铁(我们现在支持根据key来流控了 写法放readme 自动生成会爆炸因为空值)
+_rate_limit_cfg = {
+    "default": {
+        "ip_per_min": 10, 
+        "key_per_min": 30, 
+        "max_concurrent_sends": 5
+    },
+    "key_limits": {}
+}
+
+# 逻辑并发门与计数控制器
+_dynamic_max_concurrent = 5
+_current_running_tasks = 0
+_concurrency_lock = threading.Lock()
+
 # ==================== 核心启动时间 ====================
 START_TIME = time.time() 
 # 全局预计算 Node ID，防止高频调用 get_local_ip 产生 socket 开销
@@ -270,9 +292,6 @@ def init_wizard():
             "certfile": certfile,
             "keyfile": keyfile,
             "admin_path": admin_path,
-            "rate_limit_ip_per_min": 10,
-            "rate_limit_key_per_min": 30,
-            "max_concurrent_sends": 5,
             "enable_custom_background": True,
             "accounts": {
                 "default": {
@@ -388,6 +407,21 @@ def ensure_configs():
             json.dump(DEFAULT_DANGER_CFG, f, ensure_ascii=False, indent=4)
         os.chmod(ACCESS_DANGER_PATH, 0o600)
         print("[*] 已自动生成危险感知配置 access-control/danger.json")
+    if not os.path.exists(RATE_LIMIT_CFG_PATH):
+        with open(RATE_LIMIT_CFG_PATH, "w", encoding="utf-8") as f:
+            json.dump({
+                "default": {"ip_per_min": 10, "key_per_min": 30, "max_concurrent_sends": 5},
+                "key_limits": {}
+            }, f, ensure_ascii=False, indent=4)
+        os.chmod(RATE_LIMIT_CFG_PATH, 0o600)
+        print("[*] 已自动生成流控配置 access-control/rate_limit.json")
+
+    if not os.path.exists(THREAD_BASE_PATH):
+        with open(THREAD_BASE_PATH, "w", encoding="utf-8") as f:
+            json.dump({"max_physical_threads": 128}, f, ensure_ascii=False, indent=4)
+        os.chmod(THREAD_BASE_PATH, 0o600)
+        print("[*] 已自动生成物理线程配置 access-control/thread_base.json")
+
     if not os.path.exists(WEB_DIR): os.makedirs(WEB_DIR)
     if not os.path.exists(ASSETS_DIR): os.makedirs(ASSETS_DIR)
     if not os.path.exists(STATIC_DIR): os.makedirs(STATIC_DIR)
@@ -434,11 +468,20 @@ if admin_path == "/assets" or admin_path.startswith("/assets/"):
     sys.exit(1)
 
 # ==================== 线程池与并发控制 ====================
-max_workers = min(CFG.get("max_concurrent_sends", 5), 32)
-executor = ThreadPoolExecutor(max_workers=max_workers)
-semaphore = threading.Semaphore(max_workers * 2)
+# 物理线程：启动时读 thread_base.json，根据你服务器的最大可承载配置调喵
+_max_physical_threads = 128
+if os.path.exists(THREAD_BASE_PATH):
+    try:
+        with open(THREAD_BASE_PATH, "r", encoding="utf-8") as f:
+            _max_physical_threads = max(1, int(json.load(f).get("max_physical_threads", 128)))
+    except Exception:
+        pass
+
+executor = ThreadPoolExecutor(max_workers=_max_physical_threads)
 _log_lock = threading.Lock()
-_config_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="ConfigReloader")
+
+# 热重载任务线程池
+_config_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ConfigReloader")
 
 # ==================== 轻量限流器 ====================
 _rate_hits_ip = defaultdict(list)
@@ -545,17 +588,30 @@ def clean_rate_dicts():
             
 threading.Thread(target=clean_rate_dicts, daemon=True).start()
 
-def check_rate_limit(ip, key):
+def check_rate_limit(ip, key, key_obj=None):
     now = time.time()
-    lim_ip = CFG.get("rate_limit_ip_per_min", 10)
-    lim_key = CFG.get("rate_limit_key_per_min", 30)
+    
+    with _rate_limit_lock:
+        default_cfg = _rate_limit_cfg.get("default", {})
+        lim_ip = default_cfg.get("ip_per_min", 10)
+        lim_key = default_cfg.get("key_per_min", 30)
+        
+        if key_obj:
+            key_id = str(key_obj.get("id", ""))
+            key_limits = _rate_limit_cfg.get("key_limits", {})
+            if key_id in key_limits:
+                special = key_limits[key_id]
+                lim_key = int(special.get("key_per_min", lim_key))
+
     with _rate_lock:
         _rate_hits_ip[ip] = [t for t in _rate_hits_ip[ip] if t > now - 60]
         _rate_hits_key[key] = [t for t in _rate_hits_key[key] if t > now - 60]
+        
         if len(_rate_hits_ip[ip]) >= lim_ip:
             return False, f"IP rate limited ({lim_ip}/min)"
         if len(_rate_hits_key[key]) >= lim_key:
             return False, f"KEY rate limited ({lim_key}/min)"
+            
         _rate_hits_ip[ip].append(now)
         _rate_hits_key[key].append(now)
         return True, ""
@@ -657,6 +713,39 @@ def _reload_danger():
                     _danger_mtime = mtime
     except Exception as e:
         audit(f"DANGER_RELOAD_ERR {repr(e)}")
+        
+def _reload_rate_limit():
+    global _rate_limit_cfg, _rate_limit_mtime, _dynamic_max_concurrent
+    try:
+        if os.path.exists(RATE_LIMIT_CFG_PATH):
+            mtime = os.stat(RATE_LIMIT_CFG_PATH).st_mtime
+            if mtime != _rate_limit_mtime:
+                with open(RATE_LIMIT_CFG_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                
+                def_raw = data.get("default", {})
+                new_ip = max(1, int(def_raw.get("ip_per_min", 10)))
+                new_key = max(1, int(def_raw.get("key_per_min", 30)))
+                new_concurrent = max(1, int(def_raw.get("max_concurrent_sends", 5)))
+                key_limits = data.get("key_limits", {})
+                
+                with _rate_limit_lock:
+                    _rate_limit_cfg = {
+                        "default": {
+                            "ip_per_min": new_ip, 
+                            "key_per_min": new_key,
+                            "max_concurrent_sends": new_concurrent
+                        },
+                        "key_limits": key_limits
+                    }
+                    _rate_limit_mtime = mtime
+                
+                with _concurrency_lock:
+                    _dynamic_max_concurrent = new_concurrent
+                    
+                audit(f"RATE_LIMIT_RELOAD_OK ip={new_ip} key={new_key} concurrent={new_concurrent} special_keys={len(key_limits)}")
+    except Exception as e:
+        audit(f"RATE_LIMIT_RELOAD_ERR {repr(e)}")
 
 def _heartbeat():
     while True:
@@ -676,6 +765,7 @@ def _wait_for_tick():
                 _reload_keys()
                 _reload_access()
                 _reload_danger()
+                _reload_rate_limit()
             finally:
                 _config_reloading.release()
         
@@ -1219,15 +1309,18 @@ Content-Type: text/html; charset="utf-8"
         audit(f"SEND_ERR tmpl={template_name} to={to_addr} key_id={key_id} ip={ip} err={repr(e)}")
         record_fail()
     finally:
+        global _current_running_tasks
+        with _concurrency_lock:
+            if _current_running_tasks > 0:
+                _current_running_tasks -= 1
+                
         if is_temp_test:
-            with _temp_key_lock:
-                save_keys({"keys": []}, deleted_ids=[key_id])
-                audit(f"TEMP_KEY_REVOKED id={key_id} reason=test_completed")
-        
-        try:
-            semaphore.release()
-        except Exception:
-            pass
+            try:
+                with _temp_key_lock:
+                    save_keys({"keys": []}, deleted_ids=[key_id])
+                    audit(f"TEMP_KEY_REVOKED id={key_id} reason=test_completed")
+            except Exception as e:
+                audit(f"TEMP_KEY_REVOKE_ERR {repr(e)}")
 
 # ==================== 主处理类 ====================
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -1572,14 +1665,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._resp(400, {"ok": False, "error": f"account '{acc_name}' not configured"})
         acc_cfg = accounts_pool[acc_name]
 
-        passed, err_msg = check_rate_limit(client_ip, k)
+        passed, err_msg = check_rate_limit(client_ip, k, key_obj)
         if not passed:
             record_reject()
             return self._resp(429, {"ok": False, "error": err_msg})
 
-        if not semaphore.acquire(blocking=False):
-            record_reject()
-            return self._resp(503, {"ok": False, "error": "Server busy, please retry later"})
+        global _current_running_tasks
+        with _concurrency_lock:
+            if _current_running_tasks >= _dynamic_max_concurrent:
+                record_reject()
+                return self._resp(503, {"ok": False, "error": "Server busy, please retry later"})
+            _current_running_tasks += 1
 
         is_temp = key_obj.get("is_temp", False)
 
@@ -1589,7 +1685,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 template_name, to_addr, template_vars, acc_cfg, client_ip, key_obj.get("id"), is_temp, tmpl_cfg
             )
         except Exception as e:
-            semaphore.release()
+            global _current_running_tasks
+            with _concurrency_lock:
+                if _current_running_tasks > 0:
+                    _current_running_tasks -= 1
             audit(f"EXECUTOR_SUBMIT_ERR {repr(e)} ip={client_ip}")
             record_reject()
             return self._resp(500, {"ok": False, "error": "server threadpool exception"})
@@ -1844,7 +1943,9 @@ def _admin_system_info(h, ctx):
         now = time.time()
         recent_rejects = len([t for t in _rejected_timestamps if t > now - 60])
 
-    running_tasks = (max_workers * 2) - semaphore._value
+    with _concurrency_lock:
+        running_tasks = _current_running_tasks
+        current_max_sends = _dynamic_max_concurrent
     tmpl_count = len([d for d in os.listdir(HTML_DIR) if os.path.isdir(os.path.join(HTML_DIR, d))]) if os.path.exists(HTML_DIR) else 0
     acc_count = len(CFG.get("accounts", {}))
 
@@ -1863,13 +1964,13 @@ def _admin_system_info(h, ctx):
 
     return h._resp(200, {
         "ok": True, "uptime": f"{hours}h {minutes}m {seconds}s", "running_tasks": running_tasks,
+        "max_concurrent_sends": current_max_sends, 
         "total_success": total_success, "total_fail": total_fail, "total_reject": total_reject,
         "reject_1m": recent_rejects, "template_count": tmpl_count, "account_count": acc_count,
         "mem_used_mb": mem_used_mb, "mem_total_mb": mem_total_mb,
         "danger_metrics": danger_metrics,
-        "smtp_modes": smtp_modes  # 新增字段
+        "smtp_modes": smtp_modes
     })
-
 def _admin_logs(h, ctx):
     p = ctx["p"]
     lines_str = str(p.get("lines", "50")).strip()
@@ -1994,7 +2095,8 @@ def graceful_shutdown(signum, frame):
     running_tasks = 0
     for i in range(3, 0, -1):
         time.sleep(1)
-        running_tasks = (max_workers * 2) - semaphore._value
+        with _concurrency_lock:
+            running_tasks = _current_running_tasks
         if running_tasks > 0:
             print(f"[~] 正在等待 {running_tasks} 个发信任务完成... ({i}s)")
         else:
