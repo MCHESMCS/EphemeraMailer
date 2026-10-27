@@ -232,22 +232,34 @@ def init_wizard():
         admin_path = input("5. 管理后台隐藏路径 [默认 /my_secret_admin]: ").strip() or "/my_secret_admin"
         
         print("\n--- 发信账户配置 ---")
-        smtp_host = input("6. SMTP 服务器地址 [默认 127.0.0.1]: ").strip() or "127.0.0.1"
-        smtp_port = int(input("   - SMTP 端口 [默认 465]: ").strip() or 465)
         
-        mode_in = input("   - 连接模式 (ssl/starttls/plain) [默认 ssl]: ").strip().lower()
-        smtp_mode = mode_in if mode_in in ("starttls", "plain") else "ssl"
+        mode_in = input("   - 连接模式 (ssl/starttls/plain/localmta) [默认 ssl]: ").strip().lower()
+        smtp_mode = mode_in if mode_in in ("starttls", "plain", "localmta") else "ssl"
         
-        smtp_user = input("   - SMTP 账号: ").strip()
-        smtp_pass = input("   - SMTP 密码: ").strip()
-        from_name = input("   - 发件人显示名称 [默认 System Admin]: ").strip() or "System Admin"
-        from_addr = input("   - 发件人邮箱: ").strip() or smtp_user
-        helo_host = input("   - HELO 域名 [默认 localhost]: ").strip() or "localhost"
-        if "@" in helo_host or "." not in helo_host:
-            helo_host = "localhost"
-            
-        ignore_ssl = input("   - 是否忽略 SMTP SSL 证书校验? (y/n) [默认 n]: ").strip().lower() == "y"
-
+        if smtp_mode == "localmta":
+            smtp_host = input("   - 本地 MTA 地址 [默认 127.0.0.1]: ").strip() or "127.0.0.1"
+            smtp_port = int(input("   - 本地 MTA 端口 [默认 25]: ").strip() or 25)
+            smtp_user = ""
+            smtp_pass = ""
+            from_name = input("   - 发件人显示名称 [默认 System Admin]: ").strip() or "System Admin"
+            from_addr = input("   - 发件人邮箱 (必须与本地 MTA 域名一致): ").strip()
+            helo_host = input("   - HELO 域名 [默认 localhost]: ").strip() or "localhost"
+            if "@" in helo_host or "." not in helo_host:
+                helo_host = "localhost"
+            ignore_ssl = False
+            print("   ⚠️  注意: SPF/DKIM/DMARC 及投递策略需在本地 MTA 中配置")
+        else:
+            smtp_host = input("6. SMTP 服务器地址 [默认 127.0.0.1]: ").strip() or "127.0.0.1"
+            smtp_port = int(input("   - SMTP 端口 [默认 465]: ").strip() or 465)
+            smtp_user = input("   - SMTP 账号: ").strip()
+            smtp_pass = input("   - SMTP 密码: ").strip()
+            from_name = input("   - 发件人显示名称 [默认 System Admin]: ").strip() or "System Admin"
+            from_addr = input("   - 发件人邮箱: ").strip() or smtp_user
+            helo_host = input("   - HELO 域名 [默认 localhost]: ").strip() or "localhost"
+            if "@" in helo_host or "." not in helo_host:
+                helo_host = "localhost"
+            ignore_ssl = input("   - 是否忽略 SMTP SSL 证书校验? (y/n) [默认 n]: ").strip().lower() == "y"
+            >
         config = {
             "listen_port": listen_port,
             "https_port": https_port,
@@ -1165,19 +1177,26 @@ Content-Type: text/html; charset="utf-8"
 {html_content}
 """.replace("\n", "\r\n")
 
-        ignore_ssl = account_cfg.get("ignore_ssl", False)
+                ignore_ssl = account_cfg.get("ignore_ssl", False)
         ctx = ssl._create_unverified_context() if ignore_ssl else ssl.create_default_context()
         
         smtp_mode = account_cfg.get("smtp_mode", "ssl")
         host = account_cfg["smtp_host"]
         port = account_cfg["smtp_port"]
         
-        if smtp_mode == "plain":
+        if smtp_mode == "localmta":
+            # 这时候就有人要问了，为什么不把local和plain合并来简化代码量呢，因为我们是支持混发的，合并逻辑会大幅降低可维护性并引发各种各样的bug
+            with smtplib.SMTP(host, port, timeout=3) as server:
+                server.ehlo(account_cfg.get("helo_host", "localhost"))
+                server.sendmail(account_cfg["from_addr"], [to_addr], mail_raw.encode("utf-8"))
+                
+        elif smtp_mode == "plain":
             with smtplib.SMTP(host, port, timeout=10) as server:
                 server.ehlo(account_cfg.get("helo_host", "localhost"))
                 if account_cfg.get("smtp_user") and account_cfg.get("smtp_pass"):
                     server.login(account_cfg["smtp_user"], account_cfg["smtp_pass"])
                 server.sendmail(account_cfg["from_addr"], [to_addr], mail_raw.encode("utf-8"))
+                
         elif smtp_mode == "starttls":
             with smtplib.SMTP(host, port, timeout=10) as server:
                 server.ehlo(account_cfg.get("helo_host", "localhost"))
@@ -1185,7 +1204,8 @@ Content-Type: text/html; charset="utf-8"
                 if account_cfg.get("smtp_user") and account_cfg.get("smtp_pass"):
                     server.login(account_cfg["smtp_user"], account_cfg["smtp_pass"])
                 server.sendmail(account_cfg["from_addr"], [to_addr], mail_raw.encode("utf-8"))
-        else:
+                
+        else: # smtp_mode == "ssl"
             with smtplib.SMTP_SSL(host, port, timeout=10, context=ctx) as server:
                 server.ehlo(account_cfg.get("helo_host", "localhost"))
                 if account_cfg.get("smtp_user") and account_cfg.get("smtp_pass"):
@@ -1829,12 +1849,17 @@ def _admin_system_info(h, ctx):
         "global_critical": _global_threat_state.get("critical_count", 0)
     }
 
+    smtp_modes = {}
+    for name, acc in CFG.get("accounts", {}).items():
+        smtp_modes[name] = acc.get("smtp_mode", "ssl")
+
     return h._resp(200, {
         "ok": True, "uptime": f"{hours}h {minutes}m {seconds}s", "running_tasks": running_tasks,
         "total_success": total_success, "total_fail": total_fail, "total_reject": total_reject,
         "reject_1m": recent_rejects, "template_count": tmpl_count, "account_count": acc_count,
         "mem_used_mb": mem_used_mb, "mem_total_mb": mem_total_mb,
-        "danger_metrics": danger_metrics
+        "danger_metrics": danger_metrics,
+        "smtp_modes": smtp_modes  # 新增字段
     })
 
 def _admin_logs(h, ctx):
