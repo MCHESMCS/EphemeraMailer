@@ -124,6 +124,27 @@ _dynamic_max_concurrent = 5
 _current_running_tasks = 0
 _concurrency_lock = threading.Lock()
 
+# ==================== 页面与静态资源管控全局状态 ====================
+PAGES_CFG_PATH = os.path.join(ACCESS_DIR, "pages.json")
+STATIC_CFG_PATH = os.path.join(ACCESS_DIR, "static.json")
+
+_pages_mtime = 0
+_pages_lock = threading.RLock()
+_pages_cfg = {"web": "all", "admin": "https"}
+
+_static_mtime = 0
+_static_lock = threading.RLock()
+_static_cfg = {
+    "default": "none",
+    "deny_extensions": [".bak", ".old", ".env", ".sql", ".git", ".map", ".py"],
+    "routes": {
+        "/static/shared/*": "all",
+        "/static/admin/*": "all",
+        "/static/web/*": "all",
+        "/assets/*": "all"
+    }
+}
+
 # ==================== 核心启动时间 ====================
 START_TIME = time.time() 
 # 全局预计算 Node ID，防止高频调用 get_local_ip 产生 socket 开销
@@ -202,6 +223,22 @@ DEFAULT_DANGER_CFG = {
         "allow_shutdown": False
     },
     "zones": {}
+}
+
+DEFAULT_PAGES_CFG = {
+    "web": "all",
+    "admin": "https"
+}
+
+DEFAULT_STATIC_CFG = {
+    "default": "none",
+    "deny_extensions": [".bak", ".old", ".env", ".sql", ".git", ".map", ".py"],
+    "routes": {
+        "/static/shared/*": "all",
+        "/static/admin/*": "all",
+        "/static/web/*": "all",
+        "/assets/*": "all"
+    }
 }
 
 # ==================== 工具类 ====================
@@ -398,16 +435,19 @@ def ensure_configs():
 
     if not os.path.exists(ACCESS_DIR):
         os.makedirs(ACCESS_DIR)
+
     if not os.path.exists(ACCESS_CONFIG_PATH):
         with open(ACCESS_CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(DEFAULT_ACCESS_CONFIG, f, ensure_ascii=False, indent=4)
         os.chmod(ACCESS_CONFIG_PATH, 0o600)
         print("[*] 已自动生成接口访问控制配置 access-control/config.json")
+
     if not os.path.exists(ACCESS_DANGER_PATH):
         with open(ACCESS_DANGER_PATH, "w", encoding="utf-8") as f:
             json.dump(DEFAULT_DANGER_CFG, f, ensure_ascii=False, indent=4)
         os.chmod(ACCESS_DANGER_PATH, 0o600)
         print("[*] 已自动生成危险感知配置 access-control/danger.json")
+
     if not os.path.exists(RATE_LIMIT_CFG_PATH):
         with open(RATE_LIMIT_CFG_PATH, "w", encoding="utf-8") as f:
             json.dump({
@@ -423,6 +463,18 @@ def ensure_configs():
             json.dump({"max_physical_threads": 128}, f, ensure_ascii=False, indent=4)
         os.chmod(THREAD_BASE_PATH, 0o600)
         print("[*] 已自动生成物理线程配置 access-control/thread_base.json")
+
+    if not os.path.exists(PAGES_CFG_PATH):
+        with open(PAGES_CFG_PATH, "w", encoding="utf-8") as f:
+            json.dump(DEFAULT_PAGES_CFG, f, ensure_ascii=False, indent=4)
+        os.chmod(PAGES_CFG_PATH, 0o600)
+        print("[*] 已自动生成页面管控配置 access-control/pages.json")
+
+    if not os.path.exists(STATIC_CFG_PATH):
+        with open(STATIC_CFG_PATH, "w", encoding="utf-8") as f:
+            json.dump(DEFAULT_STATIC_CFG, f, ensure_ascii=False, indent=4)
+        os.chmod(STATIC_CFG_PATH, 0o600)
+        print("[*] 已自动生成静态资源管控配置 access-control/static.json")
 
     if not os.path.exists(WEB_DIR): os.makedirs(WEB_DIR)
     if not os.path.exists(ASSETS_DIR): os.makedirs(ASSETS_DIR)
@@ -444,7 +496,7 @@ ensure_configs()
 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
     CFG = json.load(f)
 
-# ======== 防白痴路径校验 =============
+# ======== 防笨蛋乱写路径 =============
 admin_path = CFG.get("admin_path", "/my_secret_admin")
 if not admin_path.startswith("/"):
     admin_path = "/" + admin_path
@@ -483,7 +535,7 @@ executor = ThreadPoolExecutor(max_workers=_max_physical_threads)
 _log_lock = threading.Lock()
 
 # 热重载任务线程池
-_config_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ConfigReloader")
+_config_executor = ThreadPoolExecutor(max_workers=6, thread_name_prefix="ConfigReloader")
 
 # ==================== 轻量限流器 ====================
 _rate_hits_ip = defaultdict(list)
@@ -756,6 +808,53 @@ def _reload_rate_limit():
     except Exception as e:
         audit(f"RATE_LIMIT_RELOAD_ERR {repr(e)}")
 
+def _reload_pages():
+    global _pages_cfg, _pages_mtime
+    try:
+        if os.path.exists(PAGES_CFG_PATH):
+            mtime = os.stat(PAGES_CFG_PATH).st_mtime
+            if mtime != _pages_mtime:
+                with open(PAGES_CFG_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                web_policy = data.get("web", "all")
+                admin_policy = data.get("admin", "https")
+                if web_policy not in ("all", "http", "https", "none"):
+                    web_policy = "all"
+                if admin_policy not in ("all", "http", "https", "none"):
+                    admin_policy = "https"
+                with _pages_lock:
+                    _pages_cfg = {"web": web_policy, "admin": admin_policy}
+                    _pages_mtime = mtime
+    except Exception as e:
+        audit(f"PAGES_RELOAD_ERR {repr(e)}")
+
+def _reload_static():
+    global _static_cfg, _static_mtime
+    try:
+        if os.path.exists(STATIC_CFG_PATH):
+            mtime = os.stat(STATIC_CFG_PATH).st_mtime
+            if mtime != _static_mtime:
+                with open(STATIC_CFG_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                
+                default_policy = data.get("default", "none")
+                if default_policy not in ("all", "http", "https", "none"):
+                    default_policy = "none"
+                deny_exts = list(data.get("deny_extensions", []))
+                routes = data.get("routes", {})
+                if not isinstance(routes, dict):
+                    routes = {}
+                    
+                with _static_lock:
+                    _static_cfg = {
+                        "default": default_policy,
+                        "deny_extensions": deny_exts,
+                        "routes": routes
+                    }
+                    _static_mtime = mtime
+    except Exception as e:
+        audit(f"STATIC_RELOAD_ERR {repr(e)}")
+
 def _heartbeat():
     while True:
         time.sleep(1)
@@ -775,6 +874,8 @@ def _wait_for_tick():
                 _reload_access()
                 _reload_danger()
                 _reload_rate_limit()
+                _reload_pages()
+                _reload_static()
             finally:
                 _config_reloading.release()
         
@@ -1143,6 +1244,59 @@ def _check_access(path):
             if re.match(pattern, path):
                 return val
     return default
+    
+def _check_page_access(path, is_https):
+    global admin_path
+    with _pages_lock:
+        cfg = dict(_pages_cfg)
+
+    if path == "/web":
+        policy = cfg.get("web", "all")
+    elif path == admin_path:
+        policy = cfg.get("admin", "https")
+    else:
+        return True
+
+    if policy == "none": return False
+    if policy == "https" and not is_https: return False
+    if policy == "http" and is_https: return False
+    return True
+
+def _check_static_policy(path, is_https):
+    with _static_lock:
+        default = _static_cfg.get("default", "none")
+        deny_exts = list(_static_cfg.get("deny_extensions", []))
+        routes = dict(_static_cfg.get("routes", {}))
+
+    # 精确路由特批豁免或绝对拉黑
+    if path in routes:
+        policy = routes[path]
+        if policy == "none": return False
+        if policy == "https" and not is_https: return False
+        if policy == "http" and is_https: return False
+        return True
+
+    # 全局后缀黑名单
+    path_lower = path.lower()
+    for ext in deny_exts:
+        if path_lower.endswith(ext):
+            return False
+
+    # 通配路由匹配
+    for rule, val in routes.items():
+        if "*" in rule:
+            pattern = "^" + re.escape(rule).replace(r"\*", "[^/]+") + "$"
+            if re.match(pattern, path):
+                policy = val
+                if policy == "none": return False
+                if policy == "https" and not is_https: return False
+                if policy == "http" and is_https: return False
+                return True
+
+    if default == "none": return False
+    if default == "https" and not is_https: return False
+    if default == "http" and is_https: return False
+    return True
 
 def load_keys():
     with _keys_lock: 
@@ -1434,7 +1588,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             path = parsed.path
             client_ip = self.client_address[0]
 
-            # ==================== 极致路由级拦截 ====================
+            # ==================== 极致路由拦截 ====================
             is_https = isinstance(self.request, ssl.SSLSocket)
             if is_https:
                 enable_api = CFG.get("enable_api_https", True)
@@ -1452,6 +1606,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if is_api_req and not enable_api:
                 self.close_connection = True
                 return
+
+            # ==================== 页面路由管控 ====================
+            if path == "/web" or path == admin_path:
+                if not _check_page_access(path, is_https):
+                    self.close_connection = True
+                    return self._resp(403, {"ok": False, "error": "page protocol not allowed"})
+
+            # ==================== 静态资源管控 ====================
+            if path.startswith("/static/") or path.startswith("/assets/"):
+                if not _check_static_policy(path, is_https):
+                    record_danger(path, client_ip)
+                    self.close_connection = True
+                    return self._resp(404, {"ok": False, "error": "not found"})
 
             # ==================== Access-Control 接口授权 ====================
             if is_api_req:
@@ -1705,7 +1872,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return self._resp(200, {"ok": True, "msg": "accepted"})
 
     def _handle_admin_api(self, path, method, p, client_ip):
-        # 1. 统一鉴权前置
+        # 统一鉴权前置
         admin_key = self.headers.get("X-Admin-Key", "")
         if not is_admin(admin_key):
             return self._resp(401, {"ok": False, "error": "admin unauthorized"})
@@ -1717,7 +1884,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "admin_id": admin_obj.get("id") if admin_obj else "INVALID"
         }
         
-        # 2. 查表分发并校验 Method
+        # 查表分发并校验 Method
         route_entry = _ADMIN_ROUTES.get(path)
         if not route_entry:
             return self._resp(404, {"ok": False, "error": "admin route not found"})
@@ -1957,6 +2124,15 @@ def _admin_system_info(h, ctx):
     tmpl_count = len([d for d in os.listdir(HTML_DIR) if os.path.isdir(os.path.join(HTML_DIR, d))]) if os.path.exists(HTML_DIR) else 0
     acc_count = len(CFG.get("accounts", {}))
 
+    with _pages_lock:
+        pages_snapshot = dict(_pages_cfg)
+
+    with _static_lock:
+        static_snapshot = {
+            "default": _static_cfg.get("default"),
+            "deny_count": len(_static_cfg.get("deny_extensions", [])),
+            "route_count": len(_static_cfg.get("routes", {}))
+        }
     # 运维指标外露
     danger_metrics = {
         "hits_keys": len(_danger_hits),
@@ -1977,6 +2153,8 @@ def _admin_system_info(h, ctx):
         "reject_1m": recent_rejects, "template_count": tmpl_count, "account_count": acc_count,
         "mem_used_mb": mem_used_mb, "mem_total_mb": mem_total_mb,
         "danger_metrics": danger_metrics,
+        "pages_policy": pages_snapshot,
+        "static_policy": static_snapshot,
         "smtp_modes": smtp_modes
     })
 def _admin_logs(h, ctx):
@@ -2136,7 +2314,7 @@ if __name__ == "__main__":
     threading.Thread(target=_heartbeat, daemon=True).start()
     threading.Thread(target=_wait_for_tick, daemon=True).start()
 
-    time.sleep(1.1) #多睡0.1秒
+    time.sleep(1.1) #多睡0.1秒(原来只睡一秒的，它比较贪睡给他加点)
     
     init_admin_key()
     
