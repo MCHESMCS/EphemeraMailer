@@ -1395,6 +1395,33 @@ def init_admin_key():
         print(f"🔑 初始 Admin Key: {new_key}")
         print(f"👉 请复制此 Key 并前往: {protocol}://<你的IP>:{port}{admin_path} 进行登录")
         print("="*60 + "\n")
+        
+# ==================== 你证书呢？ =====================
+def _check_https_cert():
+    https_api_on = CFG.get("enable_api_https", True)
+    https_web_on = CFG.get("enable_web_https", True)
+    
+    if not (https_api_on or https_web_on):
+        return  
+
+    cert_file = CFG.get("certfile", "certs/server.crt")
+    key_file = CFG.get("keyfile", "certs/server.key")
+
+    if not os.path.isabs(cert_file): cert_file = os.path.join(BASE_DIR, cert_file)
+    if not os.path.isabs(key_file): key_file = os.path.join(BASE_DIR, key_file)
+
+    if not os.path.exists(cert_file):
+        raise FileNotFoundError(f"HTTPS 证书文件不存在: {cert_file}")
+    if not os.path.exists(key_file):
+        raise FileNotFoundError(f"HTTPS 私钥文件不存在: {key_file}")
+
+    try:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(certfile=cert_file, keyfile=key_file)
+    except ssl.SSLError as e:
+        raise ValueError(f"HTTPS 证书加载失败（证书/私钥不匹配或格式错误）: {e}")
+    except Exception as e:
+        raise ValueError(f"HTTPS 证书预检未知错误: {e}")
 
 # ==================== 异步发信引擎 ====================
 def async_send_task(template_name, to_addr, params, account_cfg, ip, key_id, is_temp_test, tmpl_cfg):
@@ -2338,8 +2365,19 @@ if __name__ == "__main__":
         https_web_on = False
         
     need_https = https_api_on or https_web_on
-    # ======================================================
+    # ==================== HTTPS 证书预检(你不能真没配证书吧) ====================
+    if need_https:
+        try:
+            _check_https_cert()
+        except Exception as e:
+            print("\n" + "!"*60)
+            print("[!] 致命错误: HTTPS 证书配置有误，已强制中止启动！")
+            print(f"[!] 原因: {e}")
+            print("[!] 请检查 config.json 中的 certfile / keyfile 路径和内容是否正确。")
+            print("!"*60 + "\n")
+            sys.exit(1)
 
+    # ======================================================
     if not need_http and not need_https:
         print("\n" + "="*45)
         print("服务启动中止：正在进行光合作用")
