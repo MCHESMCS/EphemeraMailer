@@ -116,6 +116,7 @@ _rate_limit_cfg = {
         "max_concurrent_sends": 5
     },
     "key_limits": {}
+    "ip_limits" {}
 }
 
 # 逻辑并发门与计数控制器
@@ -411,7 +412,8 @@ def ensure_configs():
         with open(RATE_LIMIT_CFG_PATH, "w", encoding="utf-8") as f:
             json.dump({
                 "default": {"ip_per_min": 10, "key_per_min": 30, "max_concurrent_sends": 5},
-                "key_limits": {}
+                "key_limits": {},
+                "ip_limits": {}
             }, f, ensure_ascii=False, indent=4)
         os.chmod(RATE_LIMIT_CFG_PATH, 0o600)
         print("[*] 已自动生成流控配置 access-control/rate_limit.json")
@@ -596,12 +598,17 @@ def check_rate_limit(ip, key, key_obj=None):
         lim_ip = default_cfg.get("ip_per_min", 10)
         lim_key = default_cfg.get("key_per_min", 30)
         
+        ip_limits = _rate_limit_cfg.get("ip_limits", {})
+        if ip in ip_limits:
+            special_ip = ip_limits[ip]
+            lim_ip = int(special_ip.get("ip_per_min", lim_ip))
+
         if key_obj:
             key_id = str(key_obj.get("id", ""))
             key_limits = _rate_limit_cfg.get("key_limits", {})
             if key_id in key_limits:
-                special = key_limits[key_id]
-                lim_key = int(special.get("key_per_min", lim_key))
+                special_key = key_limits[key_id]
+                lim_key = int(special_key.get("key_per_min", lim_key))
 
     with _rate_lock:
         _rate_hits_ip[ip] = [t for t in _rate_hits_ip[ip] if t > now - 60]
@@ -729,6 +736,9 @@ def _reload_rate_limit():
                 new_concurrent = max(1, int(def_raw.get("max_concurrent_sends", 5)))
                 key_limits = data.get("key_limits", {})
                 
+                key_limits = data.get("key_limits", {})
+                ip_limits = data.get("ip_limits", {})
+                
                 with _rate_limit_lock:
                     _rate_limit_cfg = {
                         "default": {
@@ -736,7 +746,8 @@ def _reload_rate_limit():
                             "key_per_min": new_key,
                             "max_concurrent_sends": new_concurrent
                         },
-                        "key_limits": key_limits
+                        "key_limits": key_limits,
+                        "ip_limits": ip_limits
                     }
                     _rate_limit_mtime = mtime
                 
@@ -1684,8 +1695,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 async_send_task, 
                 template_name, to_addr, template_vars, acc_cfg, client_ip, key_obj.get("id"), is_temp, tmpl_cfg
             )
-        except Exception as e:
-            global _current_running_tasks
+        except Exception as e:     
             with _concurrency_lock:
                 if _current_running_tasks > 0:
                     _current_running_tasks -= 1
