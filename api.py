@@ -115,8 +115,8 @@ _rate_limit_cfg = {
         "key_per_min": 30, 
         "max_concurrent_sends": 5
     },
-    "key_limits": {}
-    "ip_limits" {}
+    "key_limits": {},
+    "ip_limits": {}
 }
 
 # 逻辑并发门与计数控制器
@@ -734,8 +734,6 @@ def _reload_rate_limit():
                 new_ip = max(1, int(def_raw.get("ip_per_min", 10)))
                 new_key = max(1, int(def_raw.get("key_per_min", 30)))
                 new_concurrent = max(1, int(def_raw.get("max_concurrent_sends", 5)))
-                key_limits = data.get("key_limits", {})
-                
                 key_limits = data.get("key_limits", {})
                 ip_limits = data.get("ip_limits", {})
                 
