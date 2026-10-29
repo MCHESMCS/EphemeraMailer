@@ -20,6 +20,7 @@ import email.header
 import copy
 import mimetypes
 import ipaddress
+import signal
 from email.utils import formatdate, make_msgid
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
@@ -158,6 +159,9 @@ NODE_ID = "127.0.0.1" # 占位，稍后重新赋值
 # 增加一个节拍器
 _config_tick = threading.Event()
 _config_reloading = threading.Lock()
+
+_REBOOT_FLAG = 0   # 0=退出, 1=重启, 2=关机
+_REBOOT_LOCK = threading.Lock()
 
 # ==================== 监控统计 ====================
 STATS_SUCCESS = 0
@@ -2346,6 +2350,34 @@ def _admin_list_templates(h, ctx):
                     except Exception: pass
                 all_tmpls.append({"id": d, "name": name, "is_web": is_web})
     return h._resp(200, {"ok": True, "templates": all_tmpls})
+    
+def _admin_reboot(h, ctx):
+    global _REBOOT_FLAG
+    with _REBOOT_LOCK:
+        _REBOOT_FLAG = 1
+    
+    audit(f"REBOOT_REQUESTED by_admin={ctx['admin_id']} ip={ctx['client_ip']}")
+    
+    def trigger():
+        time.sleep(0.5)
+        os.kill(os.getpid(), signal.SIGTERM)
+    
+    threading.Thread(target=trigger, daemon=True).start()
+    return h._resp(200, {"ok": True, "msg": "system rebooting"})
+
+def _admin_shutdown(h, ctx):
+    global _REBOOT_FLAG
+    with _REBOOT_LOCK:
+        _REBOOT_FLAG = 2
+    
+    audit(f"SHUTDOWN_REQUESTED by_admin={ctx['admin_id']} ip={ctx['client_ip']}")
+    
+    def trigger():
+        time.sleep(0.5)
+        os.kill(os.getpid(), signal.SIGTERM)
+    
+    threading.Thread(target=trigger, daemon=True).start()
+    return h._resp(200, {"ok": True, "msg": "system shutting down"})
 
 # 路由表：注册允许的方法，删除冗余的 /admin/api/keys
 _ADMIN_ROUTES = {
@@ -2359,6 +2391,8 @@ _ADMIN_ROUTES = {
     "/api/admin/system_info": (_admin_system_info, ["GET", "POST"]),
     "/api/admin/logs": (_admin_logs, ["GET", "POST"]),
     "/api/admin/list_templates": (_admin_list_templates, ["GET", "POST"]),
+    "/api/admin/reboot": (_admin_reboot, ["GET", "POST"]),
+    "/api/admin/shutdown": (_admin_shutdown, ["GET", "POST"]),
 }
 
 # ==================== 多线程服务与启动 ====================
@@ -2430,9 +2464,25 @@ def graceful_shutdown(signum, frame):
             
     if running_tasks > 0:
         print(f"[?] 即将有 {running_tasks} 个发信任务被丢弃")
-                     
-    print("[+] 服务器已安全关闭，进程退出")
-    sys.exit(0)
+
+    # ==================== 重启判断 ====================
+    global _REBOOT_FLAG
+    with _REBOOT_LOCK:
+        should_reboot = (_REBOOT_FLAG == 1)
+        is_shutdown = (_REBOOT_FLAG == 2)
+        _REBOOT_FLAG = 0  # 关键：执行动作前先清零，保证状态绝对干净
+
+    if should_reboot:
+        print("[+] 服务器已安全关闭，准备无缝重启...")
+        time.sleep(0.5)  # 给 OS 释放端口
+        os.chdir(BASE_DIR)
+        os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
+    elif is_shutdown:
+        print("[+] 收到关机指令，服务器已安全关闭，进程退出。")
+        sys.exit(0)
+    else:
+        print("[+] 服务器已安全关闭，进程退出")
+        sys.exit(0)
 
 signal.signal(signal.SIGINT, graceful_shutdown)
 signal.signal(signal.SIGTERM, graceful_shutdown)
