@@ -19,6 +19,7 @@ import html
 import email.header
 import copy
 import mimetypes
+import ipaddress
 from email.utils import formatdate, make_msgid
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
@@ -127,6 +128,10 @@ _concurrency_lock = threading.Lock()
 # ==================== 页面与静态资源管控全局状态 ====================
 PAGES_CFG_PATH = os.path.join(ACCESS_DIR, "pages.json")
 STATIC_CFG_PATH = os.path.join(ACCESS_DIR, "static.json")
+PROXY_CFG_PATH = os.path.join(ACCESS_DIR, "proxy.json")
+_proxy_mtime = 0
+_proxy_lock = threading.RLock()
+_proxy_cfg = {"mode": "none", "nginx_trusted_ips": ["127.0.0.1", "::1"]}
 
 _pages_mtime = 0
 _pages_lock = threading.RLock()
@@ -241,6 +246,11 @@ DEFAULT_STATIC_CFG = {
     }
 }
 
+DEFAULT_PROXY_CFG = {
+    "mode": "none",
+    "nginx_trusted_ips": ["127.0.0.1", "::1"]
+}
+
 # ==================== 工具类 ====================
 def get_local_ip():
     try:
@@ -260,6 +270,53 @@ def get_public_ip():
     except Exception:
         return "未检测到公网IP(或超时)"
 
+def _is_ip_trusted(client_ip, trusted_list):
+    if not trusted_list:
+        return False
+    try:
+        ip_obj = ipaddress.ip_address(client_ip)
+    except ValueError:
+        return False
+    
+    for rule in trusted_list:
+        try:
+            if "/" in rule:
+                if ip_obj in ipaddress.ip_network(rule, strict=False):
+                    return True
+            else:
+                if ip_obj == ipaddress.ip_address(rule):
+                    return True
+        except ValueError:
+            continue
+    return False
+
+def _get_real_ip_from_handler(handler):
+    with _proxy_lock:
+        mode = _proxy_cfg.get("mode", "none")
+        trusted_ips = list(_proxy_cfg.get("nginx_trusted_ips", []))
+    
+    remote_ip = handler.client_address[0]
+    
+    if mode == "none":
+        return remote_ip, True
+    
+    if mode == "cf":
+        cf_ip = handler.headers.get("CF-Connecting-IP", "").strip()
+        if cf_ip:
+            return cf_ip, True
+        return remote_ip, True
+        
+    if mode == "nginx":
+        if _is_ip_trusted(remote_ip, trusted_ips):
+            real_ip = handler.headers.get("X-Real-IP", "").strip()
+            if real_ip:
+                return real_ip, True
+            return remote_ip, True
+        else:
+            return remote_ip, False
+    
+    return remote_ip, True
+    
 # ==================== 交互式 CLI ====================
 def init_wizard():
     global _keys_cache 
@@ -475,6 +532,12 @@ def ensure_configs():
             json.dump(DEFAULT_STATIC_CFG, f, ensure_ascii=False, indent=4)
         os.chmod(STATIC_CFG_PATH, 0o600)
         print("[*] 已自动生成静态资源管控配置 access-control/static.json")
+        
+    if not os.path.exists(PROXY_CFG_PATH):
+        with open(PROXY_CFG_PATH, "w", encoding="utf-8") as f:
+            json.dump(DEFAULT_PROXY_CFG, f, ensure_ascii=False, indent=4)
+        os.chmod(PROXY_CFG_PATH, 0o600)
+        print("[*] 已自动生成代理真实 IP 配置 access-control/proxy.json")
 
     if not os.path.exists(WEB_DIR): os.makedirs(WEB_DIR)
     if not os.path.exists(ASSETS_DIR): os.makedirs(ASSETS_DIR)
@@ -535,7 +598,7 @@ executor = ThreadPoolExecutor(max_workers=_max_physical_threads)
 _log_lock = threading.Lock()
 
 # 热重载任务线程池
-_config_executor = ThreadPoolExecutor(max_workers=6, thread_name_prefix="ConfigReloader")
+_config_executor = ThreadPoolExecutor(max_workers=7, thread_name_prefix="ConfigReloader")
 
 # ==================== 轻量限流器 ====================
 _rate_hits_ip = defaultdict(list)
@@ -855,6 +918,37 @@ def _reload_static():
     except Exception as e:
         audit(f"STATIC_RELOAD_ERR {repr(e)}")
 
+def _reload_proxy():
+    global _proxy_cfg, _proxy_mtime
+    try:
+        if os.path.exists(PROXY_CFG_PATH):
+            mtime = os.stat(PROXY_CFG_PATH).st_mtime
+            if mtime != _proxy_mtime:
+                with open(PROXY_CFG_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                
+                mode = str(data.get("mode", "none")).lower().strip()
+                if mode not in ("none", "cf", "nginx"):
+                    mode = "none"
+                
+                raw_ips = data.get("nginx_trusted_ips", [])
+                trusted_ips = []
+                if isinstance(raw_ips, list):
+                    for item in raw_ips:
+                        s = str(item).strip()
+                        if s: trusted_ips.append(s)
+                
+                with _proxy_lock:
+                    _proxy_cfg = {
+                        "mode": mode,
+                        "nginx_trusted_ips": trusted_ips
+                    }
+                    _proxy_mtime = mtime
+                
+                audit(f"PROXY_RELOAD_OK mode={mode} trusted_count={len(trusted_ips)}")
+    except Exception as e:
+        audit(f"PROXY_RELOAD_ERR {repr(e)}")
+
 def _heartbeat():
     while True:
         time.sleep(1)
@@ -876,6 +970,7 @@ def _wait_for_tick():
                 _reload_rate_limit()
                 _reload_pages()
                 _reload_static()
+                _reload_proxy()
             finally:
                 _config_reloading.release()
         
@@ -1613,10 +1708,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
             parsed = urllib.parse.urlparse(self.path)
             path = parsed.path
-            client_ip = self.client_address[0]
+            
+            client_ip, is_trusted_proxy = _get_real_ip_from_handler(self)
+            
+            if not is_trusted_proxy:
+                audit(f"NGINX_PROXY_UNTRUSTED ip={client_ip} path={path}")
+                record_reject()
+                self.close_connection = True
+                return self._resp(403, {"ok": False, "error": "Untrusted proxy source"})
 
             # ==================== 极致路由拦截 ====================
             is_https = isinstance(self.request, ssl.SSLSocket)
+            
+            with _proxy_lock:
+                proxy_mode = _proxy_cfg.get("mode", "none")
+                
+            if proxy_mode in ("cf", "nginx"):
+                proto = self.headers.get("X-Forwarded-Proto", "").lower()
+                if proto == "https":
+                    is_https = True
+                elif proto == "http":
+                    is_https = False
             if is_https:
                 enable_api = CFG.get("enable_api_https", True)
                 enable_web = CFG.get("enable_web_https", True)
@@ -2401,6 +2513,26 @@ if __name__ == "__main__":
         else:
             print("  [HTTPS] ❌ 完全关闭 (API和Web都未开启)")
         
+        print("="*45 + "\n")
+
+        # ==================== 真实 IP 识别模式强提醒 ====================
+        with _proxy_lock:
+            proxy_mode = _proxy_cfg.get("mode", "none")
+            trusted_ips = _proxy_cfg.get("nginx_trusted_ips", [])
+
+        print("\n" + "="*45)
+        if proxy_mode == "cf":
+            print("  [IP 模式] \033[92m[Cloudflare 直连模式]\033[0m")
+            print("  ⚠️  后端将直接信任请求头中的 CF-Connecting-IP。")
+            print("  ⚠️  请确保您的服务器防火墙已拦截除 CF 之外的直连流量，否则极易被伪造攻击！")
+        elif proxy_mode == "nginx":
+            print("  [IP 模式] \033[96m[Nginx 反代模式]\033[0m")
+            print(f"  ⚠️  当前允许的 Nginx 节点 IP: {trusted_ips}")
+            print("  ⚠️  后端将从 X-Real-IP 头读取真实 IP。直连方必须在信任列表中，否则返回 403！")
+        else:
+            print("  [IP 模式] \033[90m[直连模式 (None)]\033[0m")
+            print("  ⚠️  未开启任何代理识别，后端直接使用 TCP 连接的 Remote_Addr。")
+            print("  ⚠️  如果您的网关前面有 Nginx 或 CDN，所有访客的 IP 将会变成代理节点的 IP。")
         print("="*45 + "\n")
 
         # 物理绑定，强制按顺序输出
